@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "efficio"
+version = "0.0.1"
+description = "Get more training out of every GPU hour on Colab, Kaggle and local GPUs."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["torch>=2.0", "numpy"]
+
+[project.optional-dependencies]
+hub = ["huggingface_hub"]
+light = ["bitsandbytes"]
+monitor = ["nvidia-ml-py"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["efficio*"]
