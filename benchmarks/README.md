@@ -39,6 +39,12 @@ python benchmarks/compare.py
 
 Both scripts also accept `--batch-size` (default 128). Use the same value for both.
 
+To measure the DataLoader tuning and channels_last separately, run the Efficio script with `--no-optimize-data` as well. That run keeps mixed precision but turns off those two optimizations, and is saved as `efficio-no-data-opt`:
+
+```bash
+python benchmarks/resnet_cifar_efficio.py --epochs 5 --no-optimize-data
+```
+
 ## Results
 
 Each run writes a JSON file to `benchmarks/results/`, named `{run}_{platform}_{timestamp}.json`. Commit these files so the whole team can compare results across platforms. Only report numbers that came from a real run.

@@ -12,6 +12,7 @@ Usage:
 """
 
 import contextlib
+import itertools
 import signal
 import time
 
@@ -20,15 +21,22 @@ import torch
 from .checkpoint import CheckpointManager
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
+from .report.profiler import GpuUtilSampler, Profiler, tips
+from .speed.dataloader import optimize_loader
+from .speed.memory_format import use_channels_last
+
+_END = object()
 
 
-def _move(obj, device):
+def _move(obj, device, channels_last=False):
     if torch.is_tensor(obj):
+        if channels_last and obj.dim() == 4 and obj.is_floating_point():
+            return obj.to(device, non_blocking=True, memory_format=torch.channels_last)
         return obj.to(device, non_blocking=True)
     if isinstance(obj, dict):
-        return {k: _move(v, device) for k, v in obj.items()}
+        return {k: _move(v, device, channels_last) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return type(obj)(_move(v, device) for v in obj)
+        return type(obj)(_move(v, device, channels_last) for v in obj)
     return obj
 
 
@@ -41,7 +49,9 @@ def _make_scaler(enabled):
 
 class Run:
     def __init__(self, budget=None, checkpoint_dir=None, save_every_minutes=15,
-                 grad_accum_steps=1, resume=True, verbose=True):
+                 grad_accum_steps=1, resume=True, verbose=True,
+                 optimize_data=True, channels_last="auto"):
+        self.profiler = Profiler()               # setup time is measured from here
         self.hw = detect_hardware()
         self.device = torch.device(self.hw.device)
         self.budget = Budget.parse(budget)
@@ -50,6 +60,12 @@ class Run:
         self.save_every = save_every_minutes * 60
         self.resume = resume
         self.verbose = verbose
+        self.optimize_data = optimize_data
+        self.channels_last_setting = channels_last
+        self.channels_last = False
+        self.optimizations = [self.hw.precision]  # what Efficio applied, for the report
+        self._gpu = GpuUtilSampler(interval=1.0)
+        self._loader_logged = False
 
         self.model = self.optimizer = self.scheduler = None
         self.scaler = _make_scaler(self.hw.precision == "fp16")
@@ -61,11 +77,23 @@ class Run:
         self._resumed_from = None
         self._install_signal_handler()
         self._log(describe(self.hw))
+        if self.hw.device == "cuda":
+            torch.backends.cudnn.benchmark = True
+            self.optimizations.append("cudnn.benchmark")
+            self._log("[efficio] cudnn.benchmark on")
 
     # ---------- setup ----------
     def prepare(self, model, optimizer, scheduler=None):
         self.model = model.to(self.device)
         self.optimizer, self.scheduler = optimizer, scheduler
+        use, reason = use_channels_last(self.channels_last_setting, self.hw.device, self.model)
+        if use:
+            self.model = self.model.to(memory_format=torch.channels_last)
+            self.channels_last = True
+            self.optimizations.append("channels_last")
+            self._log("[efficio] channels_last on (conv model on GPU)")
+        elif self.channels_last_setting is True:
+            self._log(f"[efficio] channels_last skipped: {reason}")
         if self.resume:
             saved = self.ckpt.load(self.model, optimizer, scheduler, self.scaler,
                                    map_location="cpu")
@@ -90,21 +118,53 @@ class Run:
     def loop(self, loader, epochs):
         """Yields batches already on the right device. Skips work done before a resume
         and stops cleanly (with a checkpoint) when the time budget runs low."""
-        for epoch in range(self.state.epoch, epochs):
-            self.state.epoch = epoch
-            skip = self.state.batch_in_epoch
-            for i, batch in enumerate(loader):
-                if i < skip:          # already trained before the resume
-                    continue          # (Phase 1: data is still loaded; faster skipping comes later)
-                if self.state.batch_size == 0 and hasattr(loader, "batch_size") and loader.batch_size:
-                    self.state.batch_size = loader.batch_size
-                self.state.batch_in_epoch = i + 1
-                yield _move(batch, self.device)
-                if self._stop_reason:
-                    return
-            self.state.epoch, self.state.batch_in_epoch = epoch + 1, 0
-        self._stop_reason = self._stop_reason or "finished"
-        self.save()
+        loader = self._prepare_loader(loader)
+        if self.hw.device == "cuda":
+            self._gpu.start()
+        prof = self.profiler
+        try:
+            for epoch in range(self.state.epoch, epochs):
+                self.state.epoch = epoch
+                skip = self.state.batch_in_epoch
+                batches = iter(loader)
+                for i in itertools.count():
+                    wait_start = time.perf_counter()
+                    batch = next(batches, _END)
+                    if batch is _END:
+                        break
+                    if i < skip:      # already trained before the resume
+                        continue      # (data is still loaded; faster skipping comes later)
+                    fetched = time.perf_counter()
+                    if self.state.batch_size == 0 and getattr(loader, "batch_size", None):
+                        self.state.batch_size = loader.batch_size
+                    self.state.batch_in_epoch = i + 1
+                    # Time up to the first trained batch (worker start-up, resume skipping) is setup
+                    first = prof.first_batch_at is None
+                    if first:
+                        prof.first_batch(fetched)
+                    yield _move(batch, self.device, self.channels_last)
+                    prof.add_step(0.0 if first else fetched - wait_start,
+                                  time.perf_counter() - fetched)
+                    if self._stop_reason:
+                        return
+                self.state.epoch, self.state.batch_in_epoch = epoch + 1, 0
+            self._stop_reason = self._stop_reason or "finished"
+            self.save()
+        finally:
+            self._gpu.stop()
+            prof.finish()
+
+    def _prepare_loader(self, loader):
+        if not self.optimize_data:
+            return loader
+        loader, changes = optimize_loader(loader, self.hw)
+        applied = [c for c in changes if not c.startswith(("unchanged", "already", "note"))]
+        if applied:
+            self.optimizations.append(f"dataloader ({', '.join(applied)})")
+        if not self._loader_logged:
+            self._log(f"[efficio] dataloader: {', '.join(changes)}")
+            self._loader_logged = True
+        return loader
 
     def backward(self, loss):
         self.scaler.scale(loss / self.state.grad_accum_steps).backward()
@@ -165,6 +225,22 @@ class Run:
             f"  checkpoints     : {self._saves} saved to {self.ckpt.directory}",
             f"  ended because   : {self._stop_reason or 'loop not finished'}",
         ]
+        prof = self.profiler
+        util = self._gpu.average
+        lines += [
+            f"  setup / training: {prof.setup_s / 60:.1f} min / {prof.train_s / 60:.1f} min "
+            f"(setup {prof.setup_pct:.0f}% of total)",
+            f"  data-wait       : {prof.data_wait_pct:.0f}% of training time",
+            f"  GPU utilization : {f'{util:.0f}% average' if util is not None else 'not measured'}",
+        ]
+        if self.hw.device == "cuda":
+            lines.append(f"  GPU session used: {mins:.1f} min")
+        lines.append(f"  optimizations   : {', '.join(self.optimizations)}")
+        advice = tips(prof.data_wait_pct, util, prof.setup_pct,
+                      on_gpu=self.hw.device == "cuda") if prof.steps else []
+        if advice:
+            lines.append("  tips:")
+            lines += [f"    - {t}" for t in advice]
         print("\n".join(lines))
 
     def _log(self, msg):
