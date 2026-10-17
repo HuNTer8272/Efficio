@@ -68,7 +68,7 @@ class Run:
         self.optimizer, self.scheduler = optimizer, scheduler
         if self.resume:
             saved = self.ckpt.load(self.model, optimizer, scheduler, self.scaler,
-                                   map_location=self.device)
+                                   map_location="cpu")
             if saved is not None:
                 for k, v in saved.items():
                     setattr(self.state, k, v)

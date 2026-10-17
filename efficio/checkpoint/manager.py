@@ -25,12 +25,13 @@ def _rng_state():
 
 
 def _set_rng_state(state):
+    # RNG states must be CPU ByteTensors, even when restoring CUDA generators.
     random.setstate(state["python"])
-    torch.set_rng_state(state["torch"])
+    torch.set_rng_state(state["torch"].cpu())
     if np is not None and "numpy" in state:
         np.random.set_state(state["numpy"])
     if torch.cuda.is_available() and "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
+        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
 
 
 class CheckpointManager:
