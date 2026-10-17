@@ -18,7 +18,10 @@ from common import (GpuUtilSampler, evaluate, make_loaders, make_model, make_opt
 parser = argparse.ArgumentParser()
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--batch-size", type=int, default=128)
+parser.add_argument("--no-optimize-data", action="store_true",
+                    help="turn off DataLoader tuning and channels_last to measure them separately")
 args = parser.parse_args()
+optimize = not args.no_optimize_data
 
 torch.manual_seed(0)
 
@@ -29,7 +32,8 @@ optimizer, scheduler = make_optimizer(model, args.epochs, len(train_loader))
 loss_fn = nn.CrossEntropyLoss()
 
 # Fresh temporary checkpoint dir and resume=False, so every benchmark run starts from scratch
-run = efficio.Run(checkpoint_dir=tempfile.mkdtemp(prefix="efficio_bench_"), resume=False)
+run = efficio.Run(checkpoint_dir=tempfile.mkdtemp(prefix="efficio_bench_"), resume=False,
+                  optimize_data=optimize, channels_last="auto" if optimize else False)
 model, optimizer = run.prepare(model, optimizer, scheduler)
 
 epoch_times = []
@@ -56,5 +60,7 @@ with GpuUtilSampler() as sampler:
 
 test_acc = evaluate(model, test_loader, run.device, autocast=run.autocast)
 run.report()
-save_results("efficio", epoch_times, len(train_loader) * args.batch_size, sampler.average,
-             test_acc, extra={"precision": run.hw.precision, "batch_size": args.batch_size})
+save_results("efficio" if optimize else "efficio-no-data-opt", epoch_times,
+             len(train_loader) * args.batch_size, sampler.average, test_acc,
+             extra={"precision": run.hw.precision, "batch_size": args.batch_size,
+                    "optimizations": run.optimizations})

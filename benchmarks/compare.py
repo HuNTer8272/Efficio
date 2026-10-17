@@ -44,20 +44,25 @@ def print_table(results):
 
 
 def print_speedups(results):
+    """Speedup of the latest run of each kind (efficio, efficio-no-data-opt) over the
+    latest baseline, per platform."""
     print()
     for platform in sorted({r["platform"] for r in results}):
         latest = {}
-        for name in ("baseline", "efficio"):
-            runs = [r for r in results if r["platform"] == platform and r["run"] == name]
-            if runs:
-                latest[name] = max(runs, key=lambda r: r.get("timestamp", ""))
-        if len(latest) < 2:
+        for r in results:
+            if r["platform"] == platform:
+                if r["run"] not in latest or r.get("timestamp", "") > latest[r["run"]].get("timestamp", ""):
+                    latest[r["run"]] = r
+        others = sorted(name for name in latest if name != "baseline")
+        if "baseline" not in latest or not others:
             missing = "baseline" if "baseline" not in latest else "efficio"
             print(f"{platform}: no {missing} run yet, can't compute a speedup")
             continue
-        base, eff = latest["baseline"]["epochs_per_hour"], latest["efficio"]["epochs_per_hour"]
-        print(f"{platform}: efficio {eff} vs baseline {base} epochs/hour "
-              f"-> {eff / base:.2f}x speedup")
+        base = latest["baseline"]["epochs_per_hour"]
+        for name in others:
+            eff = latest[name]["epochs_per_hour"]
+            print(f"{platform}: {name} {eff} vs baseline {base} epochs/hour "
+                  f"-> {eff / base:.2f}x speedup")
 
 
 if __name__ == "__main__":

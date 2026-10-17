@@ -22,13 +22,15 @@ Local GPUs have no quota, so there the benefit is speed and safety, not extra ti
 
 ## Features
 
-Each item is marked **Available** (in the library today) or **Planned** (on the roadmap).
+Each item is marked **Available** (in the library and verified on a GPU), **Available, needs GPU verification** (in the library and tested on CPU, not yet verified on a GPU) or **Planned** (on the roadmap).
 
 ### Speed
 
 | Feature | Status |
 |---|---|
 | GPU-aware precision: fp16 on T4, bf16 on newer GPUs | Available |
+| Automatic DataLoader tuning: more workers, pinned memory, persistent workers, prefetching | Available, needs GPU verification |
+| channels_last memory format for convolutional models | Available, needs GPU verification |
 | Auto batch size with out-of-memory recovery | Planned |
 | Preprocessing cache | Planned |
 | Use both Kaggle T4 GPUs | Planned |
@@ -68,6 +70,8 @@ Each item is marked **Available** (in the library today) or **Planned** (on the 
 | Feature | Status |
 |---|---|
 | Basic end-of-run report | Available |
+| Profiler: data-wait time and GPU utilization | Available, needs GPU verification |
+| Improved report: setup vs training time, data-wait, GPU utilization, applied optimizations and tips | Available, needs GPU verification |
 | Detailed report with GPU usage, time breakdown, wasted quota and tips | Planned |
 | Telegram and email notifications | Planned |
 
