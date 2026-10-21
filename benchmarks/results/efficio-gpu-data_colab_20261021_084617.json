@@ -1,0 +1,30 @@
+{
+  "run": "efficio-gpu-data",
+  "platform": "colab",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu130",
+  "timestamp": "20261021_084617",
+  "epochs": 5,
+  "epoch_times_s": [
+    14.278,
+    13.25,
+    13.292,
+    13.291,
+    13.422
+  ],
+  "avg_epoch_s_excl_first": 13.314,
+  "epochs_per_hour": 270.392,
+  "images_per_s": 3749.4,
+  "peak_mem_gb": 0.672,
+  "avg_gpu_util_pct": 96.3,
+  "test_acc_pct": 85.59,
+  "precision": "fp16",
+  "batch_size": 128,
+  "gpu_data": true,
+  "optimizations": [
+    "fp16",
+    "cudnn.benchmark",
+    "channels_last",
+    "GPULoader (data on the GPU)"
+  ]
+}

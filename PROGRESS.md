@@ -102,3 +102,30 @@ efficio/speed/gpu_data.py (new), efficio/speed/gpu_augment.py (new), efficio/run
 - GPULoader shuffles with its own seeded generator, so the sample order differs from the baseline DataLoader's order. Accuracy should be statistically the same, but the runs are not sample-for-sample identical.
 - With GPULoader, mid-epoch resume is data-exact (same order and same augmentation, checked by the test). With a shuffled DataLoader it still is not (see the 2026-10-17 entry).
 - Only `.data`/`.targets` datasets are supported by `from_torchvision`. SVHN (`.labels`) and ImageFolder need `from_tensors`.
+
+## 2026-10-21 (Colab GPU verification of Phase 2, branch feat/profiler-dataloading)
+
+**What changed**
+- README: DataLoader tuning, channels_last, GPULoader, profiler and the improved report are now marked Available (verified on a Colab T4). Added the Colab ResNet-18 results under "Measuring results".
+- Committed the three Colab result files in `benchmarks/results/`. The Colab runtime was reset before the files could be downloaded, so they were rebuilt from the JSON the scripts printed during the run. `save_results` prints exactly what it writes, so the values are the measured ones and `compare.py` reproduces the printed table.
+
+**Files touched**
+README.md, PROGRESS.md, benchmarks/results/baseline_colab_20261021_084307.json, benchmarks/results/efficio_colab_20261021_084501.json, benchmarks/results/efficio-gpu-data_colab_20261021_084617.json
+
+**How it was tested (Colab, 1x Tesla T4, torch 2.11.0+cu130, commit 43f96ed)**
+- `pytest -q`: 37 passed. The test that used to fail on GPUs now passes. 2 warnings come from tests that create 3-4 workers on the 2-CPU machine.
+- Quickstart: fp16 detected, budget stop at step 2490, resumed from (15, 135), finished at epoch 200, step 31400 (the same step count as on CPU). No error after the report, so the unexplained error from the last Colab run did not come back.
+- SIGTERM sent to quickstart: "stopping: shutdown signal", checkpoint saved, report says "ended because: shutdown signal".
+- ResNet-18 / CIFAR-10, 5 epochs:
+  - baseline: 47.6 s per epoch, 75.6 epochs/hour, 98% GPU utilization, 85.37% accuracy
+  - efficio: 20.7 s, 173.6 epochs/hour, 54% utilization, 22% data-wait, 85.57%, 2.30x
+  - efficio-gpu-data: 13.3 s, 270.4 epochs/hour, 96% utilization, 5% data-wait, 85.59%, 3.58x
+  - The efficio run's report suggested GPULoader with the 3-line example, as intended. In the gpu-data run, channels_last was applied to GPULoader batches.
+- GPULoader resume on the GPU (CIFAR-shaped random data, 60 s budget): the first run stopped at step 836 (epoch 2, batch 56). The second run resumed from (2, 56) and finished at epoch 3, step 1170 (3 x 390).
+
+**Still needs a GPU test**
+- Kaggle (2x T4): pytest, quickstart, the benchmark with all three runs, and the attached CIFAR-10 copy (the "CIFAR-10 source" line should report a copied folder or extracted archive).
+
+**Open questions**
+- The CIFAR-10 download also took 42 min 43 s on Colab (66.5 kB/s), using GPU quota before training started. Options: download once on a CPU runtime into Google Drive and pass `--data-dir`, or have `prepare_cifar10` also look in a mounted Drive folder.
+- On short runs (about 30 s), GPU utilization reads lower (82-89%) because cuDNN warm-up is included, so the "larger batch size" tip can appear. Consider skipping that tip for very short runs.
