@@ -23,6 +23,7 @@ from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
 from .report.profiler import GpuUtilSampler, Profiler, tips
 from .speed.dataloader import optimize_loader
+from .speed.gpu_data import GPULoader, fits_on_gpu
 from .speed.memory_format import use_channels_last
 
 _END = object()
@@ -66,6 +67,7 @@ class Run:
         self.optimizations = [self.hw.precision]  # what Efficio applied, for the report
         self._gpu = GpuUtilSampler(interval=1.0)
         self._loader_logged = False
+        self._gpu_loader_fits = False    # report tip: the dataset could live on the GPU
 
         self.model = self.optimizer = self.scheduler = None
         self.scaler = _make_scaler(self.hw.precision == "fp16")
@@ -75,7 +77,6 @@ class Run:
         self._signal_received = False
         self._saves = 0
         self._resumed_from = None
-        self._install_signal_handler()
         self._log(describe(self.hw))
         if self.hw.device == "cuda":
             torch.backends.cudnn.benchmark = True
@@ -119,21 +120,28 @@ class Run:
         """Yields batches already on the right device. Skips work done before a resume
         and stops cleanly (with a checkpoint) when the time budget runs low."""
         loader = self._prepare_loader(loader)
-        if self.hw.device == "cuda":
-            self._gpu.start()
         prof = self.profiler
+        if self._stop_reason == "finished":     # an earlier loop() ended normally; train again
+            self._stop_reason = None
+        old_handler = self._install_signal_handler()
         try:
             for epoch in range(self.state.epoch, epochs):
                 self.state.epoch = epoch
-                skip = self.state.batch_in_epoch
+                skip = start = self.state.batch_in_epoch
+                if hasattr(loader, "set_epoch"):
+                    loader.set_epoch(epoch)
+                if skip and hasattr(loader, "set_start_batch"):
+                    loader.set_start_batch(skip)    # GPULoader: jump there without loading
+                else:
+                    start = 0
                 batches = iter(loader)
-                for i in itertools.count():
+                for i in itertools.count(start):
                     wait_start = time.perf_counter()
                     batch = next(batches, _END)
                     if batch is _END:
                         break
                     if i < skip:      # already trained before the resume
-                        continue      # (data is still loaded; faster skipping comes later)
+                        continue      # (DataLoader: data is still loaded, then dropped)
                     fetched = time.perf_counter()
                     if self.state.batch_size == 0 and getattr(loader, "batch_size", None):
                         self.state.batch_size = loader.batch_size
@@ -142,6 +150,10 @@ class Run:
                     first = prof.first_batch_at is None
                     if first:
                         prof.first_batch(fetched)
+                        # Start sampling only now: DataLoader workers are already forked
+                        # (forking with a running thread can deadlock) and setup is excluded
+                        if self.hw.device == "cuda":
+                            self._gpu.start()
                     yield _move(batch, self.device, self.channels_last)
                     prof.add_step(0.0 if first else fetched - wait_start,
                                   time.perf_counter() - fetched)
@@ -153,18 +165,28 @@ class Run:
         finally:
             self._gpu.stop()
             prof.finish()
+            self._restore_signal_handler(old_handler)
 
     def _prepare_loader(self, loader):
+        if isinstance(loader, GPULoader):
+            self._note_optimization("GPULoader (data on the GPU)")
+            return loader
+        if self.hw.device == "cuda":
+            self._gpu_loader_fits = fits_on_gpu(getattr(loader, "dataset", None), self.device)
         if not self.optimize_data:
             return loader
         loader, changes = optimize_loader(loader, self.hw)
         applied = [c for c in changes if not c.startswith(("unchanged", "already", "note"))]
         if applied:
-            self.optimizations.append(f"dataloader ({', '.join(applied)})")
+            self._note_optimization(f"dataloader ({', '.join(applied)})")
         if not self._loader_logged:
             self._log(f"[efficio] dataloader: {', '.join(changes)}")
             self._loader_logged = True
         return loader
+
+    def _note_optimization(self, text):
+        if text not in self.optimizations:      # loop() may be called more than once
+            self.optimizations.append(text)
 
     def backward(self, loss):
         self.scaler.scale(loss / self.state.grad_accum_steps).backward()
@@ -202,11 +224,24 @@ class Run:
             self.save()
 
     def _install_signal_handler(self):
+        """Catch SIGTERM while training. Returns the previous handler, or None if ours
+        could not be installed."""
         def handler(signum, frame):
             self._signal_received = True       # save happens at the next optimizer step
         try:
-            signal.signal(signal.SIGTERM, handler)
+            return signal.signal(signal.SIGTERM, handler)
         except (ValueError, OSError):           # not in the main thread, or unsupported
+            return None
+
+    @staticmethod
+    def _restore_signal_handler(old):
+        # Put the previous handler back so that, after training, SIGTERM stops the process
+        # (or notebook kernel) as usual instead of only setting a flag nobody reads.
+        if old is None:
+            return
+        try:
+            signal.signal(signal.SIGTERM, old)
+        except (ValueError, OSError, TypeError):
             pass
 
     @property
@@ -237,10 +272,11 @@ class Run:
             lines.append(f"  GPU session used: {mins:.1f} min")
         lines.append(f"  optimizations   : {', '.join(self.optimizations)}")
         advice = tips(prof.data_wait_pct, util, prof.setup_pct,
-                      on_gpu=self.hw.device == "cuda") if prof.steps else []
+                      on_gpu=self.hw.device == "cuda",
+                      gpu_loader_fits=self._gpu_loader_fits) if prof.steps else []
         if advice:
             lines.append("  tips:")
-            lines += [f"    - {t}" for t in advice]
+            lines += ["    - " + t.replace("\n", "\n        ") for t in advice]
         print("\n".join(lines))
 
     def _log(self, msg):

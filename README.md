@@ -31,6 +31,7 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | GPU-aware precision: fp16 on T4, bf16 on newer GPUs | Available |
 | Automatic DataLoader tuning: more workers, pinned memory, persistent workers, prefetching | Available, needs GPU verification |
 | channels_last memory format for convolutional models | Available, needs GPU verification |
+| GPU data pipeline for small datasets (GPULoader) | Available, needs GPU verification |
 | Auto batch size with out-of-memory recovery | Planned |
 | Preprocessing cache | Planned |
 | Use both Kaggle T4 GPUs | Planned |
@@ -91,6 +92,22 @@ for batch in run.loop(loader, epochs=20):
 
 run.report()
 ```
+
+### Keep a small dataset on the GPU
+
+On Colab the GPU often waits for 2 CPU cores to augment images. If your dataset fits in GPU memory (CIFAR, MNIST, FashionMNIST), `GPULoader` keeps it on the GPU and does the augmentation there, so no CPU work is done per batch. Use it in place of the DataLoader:
+
+```python
+from efficio import GPULoader
+from efficio.speed import gpu_augment as A
+
+loader = GPULoader.from_torchvision(train_set, batch_size=128, shuffle=True, transform=A.Compose(
+    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))
+for x, y in run.loop(loader, epochs=20):
+    ...
+```
+
+`from_torchvision` reads `train_set.data` and `train_set.targets` and ignores the dataset's own CPU transform, so pass the GPU version as `transform`. For other data, use `GPULoader.from_tensors(x, y, batch_size)`. GPULoader refuses datasets that would need more than 30% of free GPU memory; use a normal DataLoader for those. The shuffle order depends only on `seed` and the epoch, so a resumed run continues with exactly the same batches.
 
 ### Try the example
 
