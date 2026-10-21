@@ -1,0 +1,30 @@
+{
+  "run": "efficio-gpu-data",
+  "platform": "kaggle",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu128",
+  "timestamp": "20261021_184943",
+  "epochs": 5,
+  "epoch_times_s": [
+    19.102,
+    14.772,
+    15.596,
+    14.59,
+    13.976
+  ],
+  "avg_epoch_s_excl_first": 14.733,
+  "epochs_per_hour": 244.344,
+  "images_per_s": 3388.2,
+  "peak_mem_gb": 1.093,
+  "avg_gpu_util_pct": 90.9,
+  "test_acc_pct": 85.52,
+  "precision": "fp16",
+  "batch_size": 128,
+  "gpu_data": true,
+  "optimizations": [
+    "fp16",
+    "cudnn.benchmark",
+    "channels_last",
+    "GPULoader (data on the GPU)"
+  ]
+}
