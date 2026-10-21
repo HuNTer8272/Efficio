@@ -68,33 +68,40 @@ class Profiler:
 
 class GpuUtilSampler:
     """Samples GPU 0 utilization with nvidia-smi in a daemon thread. Never raises:
-    if nvidia-smi is missing or fails, it just records nothing."""
+    if nvidia-smi fails it skips that sample, and if it is missing it stops trying."""
 
     CMD = ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits", "-i", "0"]
 
     def __init__(self, interval=1.0):
         self.interval = interval
         self.samples = []
+        self.available = True
         self._stop = threading.Event()
         self._thread = None
 
     def start(self):
+        if not self.available:
+            return
+        self._stop.clear()
         if self._thread is None or not self._thread.is_alive():
-            self._stop.clear()
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
     def stop(self):
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            # Short wait only: a slow nvidia-smi call must not hold up the end of training
+            self._thread.join(timeout=1)
 
     def _run(self):
         while not self._stop.is_set():
             try:
                 out = subprocess.run(self.CMD, capture_output=True, text=True, timeout=5)
                 self.samples.append(float(out.stdout.strip().splitlines()[0]))
-            except Exception:       # anything goes wrong: skip this sample, keep training
+            except FileNotFoundError:   # no nvidia-smi on this machine
+                self.available = False
+                return
+            except Exception:           # anything else: skip this sample, keep training
                 pass
             self._stop.wait(self.interval)
 
@@ -103,13 +110,25 @@ class GpuUtilSampler:
         return sum(self.samples) / len(self.samples) if self.samples else None
 
 
-def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True):
+GPU_LOADER_EXAMPLE = (
+    "from efficio import GPULoader\n"
+    "from efficio.speed import gpu_augment as A\n"
+    "loader = GPULoader.from_torchvision(train_set, batch_size=128, transform=A.Compose(\n"
+    "    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))")
+
+
+def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=False):
     """Plain-language advice from the measured numbers. gpu_util_pct may be None (no GPU data).
-    The data-wait and utilization tips are about keeping a GPU busy, so they need on_gpu."""
+    The data-wait and utilization tips are about keeping a GPU busy, so they need on_gpu.
+    gpu_loader_fits: the training set is a torchvision dataset small enough for GPULoader."""
     out = []
-    if on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT:
+    if on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and gpu_loader_fits:
+        out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Your dataset "
+                   "fits in GPU memory, so keep it there and augment on the GPU:\n"
+                   + GPU_LOADER_EXAMPLE)
+    elif on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT:
         out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Try more "
-                   "DataLoader workers, or keep a small dataset on the GPU (planned in Efficio).")
+                   "DataLoader workers, or lighter CPU preprocessing.")
     elif on_gpu and gpu_util_pct is not None and gpu_util_pct < LOW_UTIL_PCT:
         out.append(f"GPU utilization is only {gpu_util_pct:.0f}% and data loading is not the "
                    "bottleneck. A larger batch size may use the GPU better.")

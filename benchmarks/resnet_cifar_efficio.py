@@ -2,6 +2,7 @@
 
 Run from the repo root (after `pip install -e .`):
     python benchmarks/resnet_cifar_efficio.py --epochs 5
+    python benchmarks/resnet_cifar_efficio.py --epochs 5 --gpu-data   # data on the GPU
 """
 
 import argparse
@@ -12,21 +13,37 @@ import torch
 from torch import nn
 
 import efficio
-from common import (GpuUtilSampler, evaluate, make_loaders, make_model, make_optimizer,
-                    save_results, sync)
+from common import (CIFAR_MEAN, CIFAR_STD, GpuUtilSampler, evaluate, make_loaders, make_model,
+                    make_optimizer, save_results, sync)
+from efficio.speed import gpu_augment as A
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--batch-size", type=int, default=128)
 parser.add_argument("--no-optimize-data", action="store_true",
                     help="turn off DataLoader tuning and channels_last to measure them separately")
+parser.add_argument("--gpu-data", action="store_true",
+                    help="keep the training set on the GPU and augment there (GPULoader)")
+parser.add_argument("--data-dir", default="./data", help="where CIFAR-10 is stored")
 args = parser.parse_args()
 optimize = not args.no_optimize_data
+run_name = "efficio-gpu-data" if args.gpu_data else "efficio"
+if not optimize:
+    run_name += "-no-data-opt"
 
 torch.manual_seed(0)
 
 # Same order as the baseline so the seeded RNG produces the same model and data order
-train_loader, test_loader = make_loaders(batch_size=args.batch_size)
+train_loader, test_loader = make_loaders(batch_size=args.batch_size, data_dir=args.data_dir)
+if args.gpu_data:
+    # Same images and augmentation as the baseline's CPU pipeline (RandomCrop(32, padding=4),
+    # RandomHorizontalFlip, Normalize), same batch size, drop_last=True. Building it draws
+    # nothing from the global RNG, so the model below is initialized identically.
+    augment = A.Compose([A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(),
+                         A.Normalize(CIFAR_MEAN, CIFAR_STD)])
+    train_loader = efficio.GPULoader.from_torchvision(
+        train_loader.dataset, batch_size=args.batch_size, shuffle=True, drop_last=True,
+        transform=augment, seed=0)
 model = make_model()
 optimizer, scheduler = make_optimizer(model, args.epochs, len(train_loader))
 loss_fn = nn.CrossEntropyLoss()
@@ -60,7 +77,7 @@ with GpuUtilSampler() as sampler:
 
 test_acc = evaluate(model, test_loader, run.device, autocast=run.autocast)
 run.report()
-save_results("efficio" if optimize else "efficio-no-data-opt", epoch_times,
+save_results(run_name, epoch_times,
              len(train_loader) * args.batch_size, sampler.average, test_acc,
              extra={"precision": run.hw.precision, "batch_size": args.batch_size,
-                    "optimizations": run.optimizations})
+                    "gpu_data": args.gpu_data, "optimizations": run.optimizations})

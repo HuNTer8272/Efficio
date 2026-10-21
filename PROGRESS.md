@@ -59,3 +59,46 @@ efficio/run.py, efficio/report/profiler.py, efficio/speed/dataloader.py (new), e
 - Existing issue, also on main: with `shuffle=True`, mid-epoch resume is not data-exact. The checkpoint stores the RNG state from mid-epoch, so on resume the epoch is reshuffled with a different permutation before batches are skipped. Some samples in that epoch are trained twice and others are skipped. The step count still matches, and that was all the Phase 1 test checked. A fix would need the epoch-start RNG state saved in the checkpoint (checkpoint code, Person A). Until then, the README's "Exact mid-epoch resume" claim only holds for unshuffled data.
 - With persistent workers, the shuffle order in epochs after the first differs from the user's original loader. Each epoch is still a full random permutation, but it is not the same one the original loader would have produced.
 - On Windows/macOS ("spawn" start method), workers are not added automatically. Extra workers need a picklable dataset and an `if __name__ == "__main__":` guard, so the user has to opt in by setting num_workers. Colab and Kaggle (Linux, "fork") get extra workers automatically.
+
+## 2026-10-21 (Phase 2 step 2, branch feat/profiler-dataloading)
+
+**Step 1: the error from the last Colab run**
+No traceback was available. `pytest -q` and both quickstart commands (`--budget 20s`, then resume) pass locally on Windows (CPU) and on Linux/WSL (CPU, "fork" workers like Colab/Kaggle), including a third run after the training had already finished. Problems found by reviewing the branch, all fixed:
+- `test_run_skips_channels_last_on_cpu` fails on every GPU machine. It used the real hardware, so on Colab, Run picked CUDA and turned channels_last on. This is the most likely cause of the Colab error. Run-based tests now force CPU hardware with a `cpu_only` fixture, so they check the same thing everywhere.
+- Calling `run.loop()` a second time with the same Run (re-running a notebook cell, or a second training phase) trained one batch and then stopped. The old "finished" stop reason was never cleared. It is now reset when a new loop starts.
+- The SIGTERM handler was installed in `Run.__init__` and never removed. In a notebook kernel, a later SIGTERM only set a flag, so the kernel did not shut down. The handler is now installed only while `run.loop()` runs, and the previous one is restored afterwards.
+- The GPU utilization sampler: it now stops trying if nvidia-smi is missing (it used to retry every second). `stop()` waits at most 1 s, so a slow nvidia-smi can't hold up the end of training. It starts at the first trained batch, after DataLoader workers have been forked (forking with a running thread can deadlock), so setup and resume skipping are no longer part of the utilization average.
+- `run.optimizations` no longer repeats entries when `loop()` is called more than once.
+- Checked and found fine: report percentages with a very short run or a run resumed at the very end (no division by zero, now covered by a test), and resume with persistent workers (tested on Linux).
+
+**Kaggle hang / slow CIFAR-10 download**
+- `benchmarks/common.py`: `prepare_cifar10` looks under `/kaggle/input` (up to 4 levels deep) for a `cifar-10-batches-py` folder or `cifar-10-python.tar.gz` and copies or extracts it into the data dir, so torchvision skips the download. It prints the source used: existing copy, copied folder, extracted archive, or download. Only the data location changes, so it is fair to both scripts.
+- `--data-dir` (default `./data`) added to both benchmark scripts. That is the only change to the baseline script.
+
+**GPU data pipeline (GPULoader)**
+- `efficio/speed/gpu_data.py`: `GPULoader.from_tensors` / `from_torchvision` keeps the dataset on the GPU (images as uint8, converted to float per batch), with a per-epoch permutation from `seed + epoch` (`set_epoch`), `set_start_batch(n)` for instant resume skipping, `__len__`, `batch_size`, and a memory check (refuses datasets above 30% of free GPU memory). It works on CPU too. `from_torchvision` raises a clear error without `.data`/`.targets`, and warns when the dataset has its own transform (which GPULoader ignores).
+- `efficio/speed/gpu_augment.py`: batched `random_crop` (zero padding, like torchvision RandomCrop), `random_horizontal_flip`, `normalize`, `Compose`, plus small `RandomCrop` / `RandomHorizontalFlip` / `Normalize` classes. Randomness is per sample and comes from the global torch RNG, which checkpoints save.
+- `Run.loop`: calls `set_epoch` and `set_start_batch` when the loader has them, skips `optimize_loader` for a GPULoader, and still applies channels_last to its batches. `efficio.GPULoader` is exported.
+- Report: when data-wait is above 10% and the training set is a torchvision dataset that fits on the GPU, the tip suggests GPULoader with a 3-line example.
+- Benchmark: `resnet_cifar_efficio.py --gpu-data` builds a GPULoader from the same train set, with the same augmentation, batch size 128, seed 0 and drop_last=True. It is saved as `efficio-gpu-data` (or `efficio-gpu-data-no-data-opt` together with `--no-optimize-data`). The test set keeps the normal loader.
+
+**Files touched**
+efficio/speed/gpu_data.py (new), efficio/speed/gpu_augment.py (new), efficio/run.py, efficio/report/profiler.py, efficio/__init__.py, tests/test_gpu_data.py (new), tests/test_speed_and_report.py, benchmarks/common.py, benchmarks/resnet_cifar_baseline.py (`--data-dir` only), benchmarks/resnet_cifar_efficio.py, benchmarks/README.md, README.md, PROGRESS.md
+
+**How it was tested**
+- pytest: 37 passed on Windows (torch 2.14.1+cpu) and on Linux/WSL (torch 2.14.1+cpu). New tests cover: GPULoader batch count and shapes, every sample exactly once per epoch, drop_last, same permutation for the same seed and epoch and a different one for other epochs, set_start_batch, input layouts, the memory check, from_torchvision with a fake dataset, the augmentation functions, and resume through `Run.loop` with a shuffled, augmented GPULoader. That resume test ends at the same step count with identical weights. Also covered: the SIGTERM handler restore, the report after resuming a finished run, a second `loop()` call, and the sampler without nvidia-smi.
+- On Linux/WSL with a fake CIFAR-10 in the real file format (the real download ran at about 40 kB/s): `prepare_cifar10` picks the attached archive, the attached folder, an existing copy, or falls back to download. Without augmentation, GPULoader batches are identical to torchvision's ToTensor+Normalize (max difference 0.0). With augmentation, the per-channel mean and std match torchvision's pipeline to within 0.001.
+- CPU smoke run on Linux/WSL of the baseline and of `resnet_cifar_efficio.py` with no flag, `--gpu-data`, and `--gpu-data --no-optimize-data` on the fake data: all ran end to end. Each saved its JSON under the right run name, and `compare.py` read them. The timings are CPU-only on fake data and are not benchmark results, so they were not committed.
+
+**Still needs a GPU test**
+- Colab and Kaggle: `pytest -q`, both quickstart commands.
+- `resnet_cifar_efficio.py --gpu-data` on Colab and Kaggle: epoch time, GPU utilization, data-wait in the report, test accuracy close to the DataLoader run, and channels_last applied to GPULoader batches. Commit the result JSON files.
+- Kaggle: attach a CIFAR-10 dataset and check that the "CIFAR-10 source" line reports the copied or extracted copy.
+- The GPULoader tip in the report on a run with high data-wait.
+- Resume with GPULoader on a GPU (stop with a budget, run again).
+- SIGTERM during training on Kaggle still saves at the next step.
+
+**Open questions**
+- GPULoader shuffles with its own seeded generator, so the sample order differs from the baseline DataLoader's order. Accuracy should be statistically the same, but the runs are not sample-for-sample identical.
+- With GPULoader, mid-epoch resume is data-exact (same order and same augmentation, checked by the test). With a shuffled DataLoader it still is not (see the 2026-10-17 entry).
+- Only `.data`/`.targets` datasets are supported by `from_torchvision`. SVHN (`.labels`) and ImageFolder need `from_tensors`.

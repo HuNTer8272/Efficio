@@ -18,6 +18,14 @@ GPU = HardwareInfo("colab", "cuda", "Tesla T4", 1, 15.0, (7, 5), False)
 
 
 @pytest.fixture
+def cpu_only(monkeypatch):
+    """Run on CPU even on a GPU machine (Colab/Kaggle), so these tests check the same thing
+    everywhere. Without this, Run picks the GPU and turns channels_last on."""
+    import efficio.run
+    monkeypatch.setattr(efficio.run, "detect_hardware", lambda: CPU)
+
+
+@pytest.fixture
 def four_cores(monkeypatch):
     monkeypatch.setattr(dl, "_cpu_count", lambda: 4)
     monkeypatch.setattr(dl, "_can_add_workers", lambda: True)
@@ -102,7 +110,7 @@ def test_channels_last_choice():
         use_channels_last("yes", "cuda", conv)
 
 
-def test_run_skips_channels_last_on_cpu(tmp_path):
+def test_run_skips_channels_last_on_cpu(tmp_path, cpu_only):
     import efficio
     run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
     model = nn.Sequential(nn.Conv2d(3, 8, 3), nn.Flatten())
@@ -137,6 +145,9 @@ def test_tips():
     assert any("batch size" in t for t in tips(2.0, 60.0, 1.0))
     assert any("data cache" in t for t in tips(2.0, 95.0, 30.0))
     assert tips(2.0, 95.0, 1.0) == []
+    assert not any("GPULoader" in t for t in tips(25.0, 60.0, 1.0))
+    assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True))
+    assert not any("GPULoader" in t for t in tips(5.0, 60.0, 1.0, gpu_loader_fits=True))
     assert tips(2.0, None, 1.0) == []     # no GPU numbers: no utilization tip
     assert tips(25.0, 60.0, 1.0, on_gpu=False) == []   # CPU run: no GPU tips
     assert any("data cache" in t for t in tips(25.0, None, 30.0, on_gpu=False))
@@ -163,7 +174,7 @@ def _train(ckpt_dir, epochs, stop_after=None):
     return run, model
 
 
-def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, monkeypatch):
+def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, cpu_only, monkeypatch):
     monkeypatch.setattr(dl, "_cpu_count", lambda: 2)    # also exercise the worker loader
     full_run, full_model = _train(tmp_path / "full", epochs=3)
 
@@ -174,3 +185,62 @@ def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, monkeypatc
     assert resumed.state.step == full_run.state.step == 24
     for a, b in zip(model.parameters(), full_model.parameters()):
         assert torch.allclose(a, b)
+
+
+# ---------- Colab/Kaggle robustness ----------
+
+def test_sigterm_handler_restored_after_loop(tmp_path, cpu_only):
+    """After training, SIGTERM must stop the process (or kernel) again as before."""
+    import signal
+    import efficio
+    before = signal.getsignal(signal.SIGTERM)
+    run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
+    model = nn.Linear(1, 4)
+    run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+    for x, y in run.loop(DataLoader(_data(16), batch_size=8), epochs=1):
+        assert signal.getsignal(signal.SIGTERM) is not before     # ours while training
+        run.backward(nn.functional.cross_entropy(model(x), y % 4))
+        run.step()
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_report_after_resuming_a_finished_run(tmp_path, cpu_only, capsys):
+    """Resumed at the very end: no batches, no steps, and the report must not divide by zero."""
+    import efficio
+    for _ in range(2):
+        run = efficio.Run(checkpoint_dir=str(tmp_path), verbose=False)
+        model = nn.Linear(1, 4)
+        run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+        for x, y in run.loop(DataLoader(_data(16), batch_size=8), epochs=1):
+            run.backward(nn.functional.cross_entropy(model(x), y % 4))
+            run.step()
+        run.report()
+    assert run._resumed_from == (1, 0) and run.profiler.steps == 0
+    assert "data-wait       : 0%" in capsys.readouterr().out
+
+
+def test_loop_twice_does_not_repeat_optimizations(tmp_path, cpu_only, four_cores, monkeypatch):
+    import efficio
+    monkeypatch.setattr(dl, "_cpu_count", lambda: 1)
+    run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
+    model = nn.Linear(1, 4)
+    run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+    loader = DataLoader(_data(16), batch_size=8)
+    for epochs in (1, 2):
+        for x, y in run.loop(loader, epochs=epochs):
+            run.backward(nn.functional.cross_entropy(model(x), y % 4))
+            run.step()
+    assert run.state.step == 4
+    assert sum(o.startswith("dataloader") for o in run.optimizations) == 1
+
+
+def test_gpu_sampler_gives_up_without_nvidia_smi():
+    from efficio.report.profiler import GpuUtilSampler
+    s = GpuUtilSampler(interval=0.01)
+    s.CMD = ["efficio-no-such-nvidia-smi"]
+    s.start()
+    s._thread.join(timeout=5)
+    assert not s._thread.is_alive() and s.available is False and s.average is None
+    s.start()                       # no new thread once we know it is missing
+    assert not s._thread.is_alive()
+    s.stop()
