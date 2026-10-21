@@ -29,9 +29,9 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | Feature | Status |
 |---|---|
 | GPU-aware precision: fp16 on T4, bf16 on newer GPUs | Available |
-| Automatic DataLoader tuning: more workers, pinned memory, persistent workers, prefetching | Available, needs GPU verification |
-| channels_last memory format for convolutional models | Available, needs GPU verification |
-| GPU data pipeline for small datasets (GPULoader) | Available, needs GPU verification |
+| Automatic DataLoader tuning: more workers, pinned memory, persistent workers, prefetching | Available |
+| channels_last memory format for convolutional models | Available |
+| GPU data pipeline for small datasets (GPULoader) | Available |
 | Auto batch size with out-of-memory recovery | Planned |
 | Preprocessing cache | Planned |
 | Use both Kaggle T4 GPUs | Planned |
@@ -71,8 +71,8 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | Feature | Status |
 |---|---|
 | Basic end-of-run report | Available |
-| Profiler: data-wait time and GPU utilization | Available, needs GPU verification |
-| Improved report: setup vs training time, data-wait, GPU utilization, applied optimizations and tips | Available, needs GPU verification |
+| Profiler: data-wait time and GPU utilization | Available |
+| Improved report: setup vs training time, data-wait, GPU utilization, applied optimizations and tips | Available |
 | Detailed report with GPU usage, time breakdown, wasted quota and tips | Planned |
 | Telegram and email notifications | Planned |
 
@@ -131,6 +131,8 @@ On both platforms we checked environment detection, mixed precision, budget stop
 
 Note: on Kaggle, Efficio currently trains on one of the two GPUs.
 
+The Phase 2 speed and visibility features (DataLoader tuning, channels_last, GPULoader, profiler and the improved report) have been verified on Colab (1x Tesla T4, fp16). We checked the tests, budget stop and resume (including resume with GPULoader), the SIGTERM save, and the ResNet-18 benchmark below. They have not been run on Kaggle yet.
+
 ## Measuring results
 
 We will benchmark three workloads, each with and without Efficio:
@@ -139,7 +141,19 @@ We will benchmark three workloads, each with and without Efficio:
 - A DistilBERT fine-tune
 - A small LoRA run
 
-We will report epochs per quota hour. Results are coming soon.
+We report epochs per quota hour.
+
+### ResNet-18 on CIFAR-10, Colab, 1x Tesla T4
+
+5 epochs, batch size 128. Averages exclude the first (warm-up) epoch. Raw results are in `benchmarks/results/`.
+
+| Run | Avg epoch | Epochs per hour | GPU utilization | Test accuracy | Speedup |
+|---|---|---|---|---|---|
+| Plain PyTorch (fp32) | 47.6 s | 75.6 | 98% | 85.37% | 1.00x |
+| Efficio (fp16, DataLoader tuning, channels_last) | 20.7 s | 173.6 | 54% | 85.57% | 2.30x |
+| Efficio + GPULoader (`--gpu-data`) | 13.3 s | 270.4 | 96% | 85.59% | 3.58x |
+
+With the normal DataLoader, the GPU waited for Colab's 2 CPU cores to augment images (22% data-wait). GPULoader keeps the data and augmentation on the GPU and brings utilization back to 96%. Kaggle results are still to come.
 
 ## Roadmap
 

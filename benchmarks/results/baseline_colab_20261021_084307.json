@@ -1,0 +1,23 @@
+{
+  "run": "baseline",
+  "platform": "colab",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu130",
+  "timestamp": "20261021_084307",
+  "epochs": 5,
+  "epoch_times_s": [
+    47.498,
+    46.494,
+    47.475,
+    48.082,
+    48.546
+  ],
+  "avg_epoch_s_excl_first": 47.649,
+  "epochs_per_hour": 75.552,
+  "images_per_s": 1047.7,
+  "peak_mem_gb": 0.784,
+  "avg_gpu_util_pct": 98.1,
+  "test_acc_pct": 85.37,
+  "precision": "fp32",
+  "batch_size": 128
+}
