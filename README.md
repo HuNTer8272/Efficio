@@ -131,7 +131,7 @@ On both platforms we checked environment detection, mixed precision, budget stop
 
 Note: on Kaggle, Efficio currently trains on one of the two GPUs.
 
-The Phase 2 speed and visibility features (DataLoader tuning, channels_last, GPULoader, profiler and the improved report) have been verified on Colab (1x Tesla T4, fp16). We checked the tests, budget stop and resume (including resume with GPULoader), the SIGTERM save, and the ResNet-18 benchmark below. They have not been run on Kaggle yet.
+The Phase 2 speed and visibility features (DataLoader tuning, channels_last, GPULoader, profiler and the improved report) have been verified on Colab (1x Tesla T4) and Kaggle (2x Tesla T4, one used), both in fp16. We checked the tests, budget stop and resume, and the ResNet-18 benchmark below on both platforms, plus GPULoader resume and the SIGTERM save on Colab.
 
 ## Measuring results
 
@@ -153,7 +153,19 @@ We report epochs per quota hour.
 | Efficio (fp16, DataLoader tuning, channels_last) | 20.7 s | 173.6 | 54% | 85.57% | 2.30x |
 | Efficio + GPULoader (`--gpu-data`) | 13.3 s | 270.4 | 96% | 85.59% | 3.58x |
 
-With the normal DataLoader, the GPU waited for Colab's 2 CPU cores to augment images (22% data-wait). GPULoader keeps the data and augmentation on the GPU and brings utilization back to 96%. Kaggle results are still to come.
+With the normal DataLoader, the GPU waited for Colab's 2 CPU cores to augment images (22% data-wait). GPULoader keeps the data and augmentation on the GPU and brings utilization back to 96%.
+
+### ResNet-18 on CIFAR-10, Kaggle, Tesla T4 (one of the two GPUs)
+
+Same settings as on Colab.
+
+| Run | Avg epoch | Epochs per hour | GPU utilization | Test accuracy | Speedup |
+|---|---|---|---|---|---|
+| Plain PyTorch (fp32) | 44.8 s | 80.3 | 98% | 85.98% | 1.00x |
+| Efficio (fp16, DataLoader tuning, channels_last) | 14.7 s | 244.3 | 89% | 85.55% | 3.04x |
+| Efficio + GPULoader (`--gpu-data`) | 14.7 s | 244.3 | 91% | 85.52% | 3.04x |
+
+Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the GPU busy (2% data-wait) and GPULoader adds no speed there. GPULoader helps when the CPU is the bottleneck, as on Colab. The report only suggests it in that case.
 
 ## Roadmap
 

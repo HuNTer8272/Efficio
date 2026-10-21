@@ -129,3 +129,29 @@ README.md, PROGRESS.md, benchmarks/results/baseline_colab_20261021_084307.json, 
 **Open questions**
 - The CIFAR-10 download also took 42 min 43 s on Colab (66.5 kB/s), using GPU quota before training started. Options: download once on a CPU runtime into Google Drive and pass `--data-dir`, or have `prepare_cifar10` also look in a mounted Drive folder.
 - On short runs (about 30 s), GPU utilization reads lower (82-89%) because cuDNN warm-up is included, so the "larger batch size" tip can appear. Consider skipping that tip for very short runs.
+
+## 2026-10-22 (Kaggle GPU verification, branch feat/profiler-dataloading)
+
+**What changed**
+- Committed the three Kaggle result files in `benchmarks/results/`. As with Colab, they were rebuilt from the JSON the scripts printed, and `compare.py` reproduces the printed table.
+- README: added the Kaggle results table and explained why GPULoader gives no extra speed on Kaggle. "Tested on" now covers both platforms.
+
+**Files touched**
+README.md, PROGRESS.md, benchmarks/results/baseline_kaggle_20261021_184650.json, benchmarks/results/efficio_kaggle_20261021_184817.json, benchmarks/results/efficio-gpu-data_kaggle_20261021_184943.json
+
+**How it was tested (Kaggle, 2x Tesla T4, torch 2.11.0+cu128, commit 04b8ace)**
+- `pytest -q`: 37 passed. 20 DeprecationWarnings about fork() in a multi-threaded process come from torch's own threads during the DataLoader tests; the same warnings appear on Linux CPU.
+- Quickstart: "kaggle: 2x Tesla T4", fp16, 4 DataLoader workers. Budget stop at step 2516, resumed from (16, 4), finished at epoch 200, step 31400 (the same as on Colab and CPU).
+- ResNet-18 / CIFAR-10, 5 epochs:
+  - baseline: 44.8 s per epoch, 80.3 epochs/hour, 98% utilization, 85.98% accuracy
+  - efficio: 14.7 s, 244.3 epochs/hour, 89% utilization, 2% data-wait, 85.55%, 3.04x
+  - efficio-gpu-data: 14.7 s, 244.3 epochs/hour, 91% utilization, 5% data-wait, 85.52%, 3.04x
+- With 4 CPU cores, the DataLoader is not the bottleneck on Kaggle, so GPULoader gives the same speed. The report correctly did not suggest GPULoader (data-wait was 2%).
+
+**Still needs a GPU test**
+- The attached-dataset path in `prepare_cifar10` is still unverified on Kaggle. No CIFAR-10 dataset was attached (`find /kaggle/input` found nothing), so the benchmark downloaded it again (48 min 29 s at 58.6 kB/s). Next Kaggle session: attach a dataset with `cifar-10-python.tar.gz` or `cifar-10-batches-py` and check the "CIFAR-10 source" line.
+- GPULoader resume and the SIGTERM test were only run on Colab.
+
+**Open questions**
+- Only one of Kaggle's two T4s is used. Using both (multi-GPU, Phase 4) is the next big speedup on Kaggle.
+- The CIFAR-10 download cost 43-48 min of GPU session on both platforms. Downloading once into Drive (Colab) or a private Kaggle dataset would avoid this.
