@@ -64,6 +64,7 @@ Two people. Person A: Run class, env/hardware, checkpointing, storage, budget ti
 ## Rules for working in this repo
 - Never add Co-Authored-By trailers or any AI attribution to commits or PRs. Claude must never appear as an author, co-author or contributor. Allowed human authors: Durvesh-dev and Hassaan Tole (HuNTer8272).
 - Never commit .venv, data/, efficio_checkpoints/ or secrets. Never put tokens in code.
+- Notebook clone instructions (Colab/Kaggle) must remove the token right after cloning: git remote set-url origin https://github.com/HuNTer8272/Efficio.git (no token). Kaggle publishes /kaggle/working on Save Version, so a token left in .git/config gets published. When checking for tokens, look for both github_pat_ and ghp_.
 - The developer is on Windows with PowerShell. Give PowerShell-compatible commands.
 - Ask before git push --force, deleting files, or changing interfaces.py.
 - The benchmark baseline scripts must stay plain PyTorch with no Efficio features; never "optimize" the baseline.

@@ -233,3 +233,50 @@ efficio/data/__init__.py (new), efficio/data/image_cache.py (new), efficio/speed
 - The images are resized to the target size without keeping the aspect ratio. Fine for most X-ray/medical datasets (often square), but an aspect-preserving resize + center crop option may be useful.
 - RandomResizedCrop has no antialiasing when it shrinks a large crop (grid_sample). Cache at the training size so crops are only slightly scaled.
 - A 100k x 224 x 224 grayscale cache is about 5 GB (RGB about 15 GB). On Colab, building into /content and then copying to Drive is much faster than writing to Drive directly.
+
+## 2026-10-22 (Kaggle GPU run of feat/large-image-support)
+
+**What was run**
+Kaggle notebook, 2x Tesla T4, commit ced9d17: `pytest -q`, then `examples/large_image_dataset.py --help` and `--fake`.
+
+**Results**
+- pytest: 63 passed (30 DeprecationWarnings about fork() in a multi-threaded process from torch's own threads in the DataLoader/process-pool tests; harmless).
+- The example ran end to end on the GPU with no errors:
+  - ImageCache built the train (270 images, 1.1 MB) and val (30 images, 0.1 MB) caches and printed the Kaggle storage tip.
+  - Training ran with fp16 + GradScaler, channels_last, cudnn.benchmark, `gpu_transform` (ToFloat, RepeatChannels, RandomResizedCrop, RandomAffine, flip, brightness/contrast, Normalize), `clip_grad_norm` with the real fp16 GradScaler on CUDA, and `evaluate_mode`. It finished at epoch 10, step 40.
+  - Validation mean AUROC 0.441 (random labels, so about chance, as expected).
+- What this does not show: speed (tiny 64x64 random images; 7% GPU utilization because the GPU had almost no work, so the "larger batch size" tip is expected), resume with gpu_transform on the GPU, the clipping values in real units on CUDA, the ImageCache tip, and reading a cache from Drive. The new features stay "Available, needs GPU verification".
+
+**Problem found**
+- The notebook cloned with `https://{token}@github.com/...`, which leaves the token in `.git/config` under /kaggle/working, and Kaggle publishes that folder on Save Version. Added a rule to CLAUDE.md: notebook clone instructions must reset the remote URL without the token right after cloning, and token checks look for both `github_pat_` and `ghp_`.
+
+## 2026-10-22 (image-folder benchmark, branch feat/large-image-support)
+
+**What changed**
+- `benchmarks/image_common.py` (no efficio import): fake data (default 5,000 grayscale 512x512 PNGs, smooth random content with fine noise, written once with a process pool to ./data/image_folder) or a real dataset via --images/--labels (same CSV format as the example), a fixed 90/10 split, ResNet-18 with a multi-label head, AdamW, the shared augmentation settings, mean AUROC and per-label accuracy.
+- `benchmarks/image_folder_baseline.py`: plain PyTorch fp32. A Dataset decodes every PNG and runs the torchvision transforms on the CPU each epoch (2 workers). It measures epoch time, data-wait (time in next()), GPU utilization, validation accuracy and AUROC.
+- `benchmarks/image_folder_efficio.py`:
+  - builds an ImageCache once and records `cache_build_s` (0 when reused)
+  - trains through Efficio with the same augmentation on the GPU (`gpu_transform`)
+  - budget stop and resume: after 2 full epochs the budget is set to run out halfway through epoch 3, the run saves and stops, and a fresh Run with new model/optimizer objects resumes and finishes
+  - records `resume` (where it stopped and resumed, final vs expected step), `epochs_all_s` (with the split epoch marked incomplete), data-wait over both phases and the optimizations
+- `benchmarks/compare.py`: a benchmark column (older CIFAR files default to `resnet18-cifar10`), data-wait and cache-build columns, and speedups per benchmark and platform against the run whose name ends in "baseline". The CIFAR speedups are unchanged (2.30x / 3.58x Colab, 3.04x Kaggle).
+- benchmarks/README.md: an image-folder section. CLAUDE.md: the token rule above.
+
+**Files touched**
+benchmarks/image_common.py (new), benchmarks/image_folder_baseline.py (new), benchmarks/image_folder_efficio.py (new), benchmarks/compare.py, benchmarks/README.md, CLAUDE.md, PROGRESS.md
+
+**How it was tested**
+- Linux/WSL CPU smoke test with small settings (300 fake PNGs at 128x128, size 64, batch 16, 4 epochs): both scripts ran and saved results.
+  - The Efficio run stopped on the budget at epoch 3, batch 10 (step 42); a fresh Run resumed from (2, 10) and finished at step 64 = expected 64 (resume.ok true). The split epoch was excluded from the average.
+  - A second Efficio run reused the cache (cache_build_s 0.0).
+  - compare.py grouped the results per benchmark.
+- The CPU timings are not meaningful (no GPU, tiny images) and were not committed.
+
+**Still needs a GPU test**
+- Run both scripts with --fake (5,000 x 512x512) on Colab and on Kaggle and commit the result files: epoch time, GPU utilization, data-wait, cache build time, and the resume check on the GPU.
+- Optionally a real attached dataset (--images/--labels, with --limit to keep the baseline short).
+
+**Open questions**
+- On fake data the PNGs were just written, so the OS file cache may hold them, which makes the baseline's file reads faster than with a real dataset in /kaggle/input or on Drive. The decode/resize/augment cost on the CPU remains, and that is what is being compared.
+- The baseline uses the same 2 DataLoader workers as the CIFAR baseline. On Kaggle (4 cores) a user might set 4; the Efficio run tunes this itself.
