@@ -155,3 +155,37 @@ README.md, PROGRESS.md, benchmarks/results/baseline_kaggle_20261021_184650.json,
 **Open questions**
 - Only one of Kaggle's two T4s is used. Using both (multi-GPU, Phase 4) is the next big speedup on Kaggle.
 - The CIFAR-10 download cost 43-48 min of GPU session on both platforms. Downloading once into Drive (Colab) or a private Kaggle dataset would avoid this.
+
+## 2026-10-22 (Phase 2 wrap-up, branch feat/profiler-dataloading)
+
+**What changed**
+- Data-exact resume with a shuffled DataLoader. `seeded_shuffle` (`efficio/speed/dataloader.py`) rebuilds a loader that uses a plain RandomSampler so the order comes from its own generator, seeded with base seed + epoch (as in GPULoader). A second generator (base seed + epoch + offset) supplies the DataLoader worker seed, so neither draws from the global RNG. `Run.loop` reseeds both before each epoch.
+  - The base seed is the user's DataLoader generator seed if they gave one, otherwise `torch.initial_seed()`, so nothing is drawn from the RNG.
+  - The base seed is stored in the checkpoint under a new optional `extra` dict (`CheckpointManager.save(..., extra=...)`; `CheckpointManager.extra` after `load`). Older checkpoints without it still load. interfaces.py was not changed.
+- When resuming mid-epoch through a DataLoader, `Run.loop` restores the RNG state after skipping the already-trained batches, so random CPU augmentation in the main process (num_workers=0) also continues exactly.
+- Shared `_rebuild` helper in `speed/dataloader.py`, used by `optimize_loader` and `seeded_shuffle`.
+- README:
+  - The resume row now says exactly when the data order is reproduced.
+  - New row for shuffled-DataLoader resume (needs GPU verification).
+  - Roadmap: Phase 2 done so far / remaining. The data cache moved from Phase 3 to Phase 2.
+  - Note that the headline numbers are single 5-epoch runs, to be averaged over 3 runs before release.
+- Benchmark comment corrected: the Efficio run still starts from the same model as the baseline, but its shuffle order now differs.
+- CLAUDE.md: permanent rule against AI attribution in commits and PRs.
+- Checked the two Kaggle result files: their averages match only by coincidence. The epoch time lists differ: [20.414, 15.197, 15.178, 14.358, 14.205] vs [19.102, 14.772, 15.596, 14.59, 13.976]; the sums of epochs 2-5 are 58.938 s vs 58.934 s. Utilization, accuracy and memory differ too. No numbers were changed.
+
+**Files touched**
+efficio/speed/dataloader.py, efficio/checkpoint/manager.py, efficio/run.py, tests/test_speed_and_report.py, benchmarks/resnet_cifar_efficio.py (comment only), README.md, CLAUDE.md, PROGRESS.md
+
+**How it was tested**
+- pytest, CPU, Windows (torch 2.5.1+cpu): 41 passed. New tests:
+  - shuffled DataLoader, stop mid-epoch, resume: the same batches in the same order and identical weights to an uninterrupted run, both with num_workers=0 plus a random CPU augmentation and with the optimized 2-worker persistent loader
+  - seeded_shuffle order per seed and epoch
+  - an old checkpoint without `extra` still loads
+- With the fix switched off (seeded_shuffle and the RNG restore disabled), both resume cases fail, so the tests detect the old behavior.
+
+**Still needs a GPU test**
+- Shuffled-DataLoader resume on Colab/Kaggle (stop with a budget mid-epoch, resume, compare with an uninterrupted run).
+
+**Open questions**
+- Random augmentation inside DataLoader workers (num_workers > 0) is still not reproduced exactly after a resume: persistent workers keep their own RNG across epochs. The order is exact; only worker-side augmentation differs. GPU augmentation (GPULoader, or gpu_transform on the next branch) uses the global RNG and is exact.
+- CLAUDE.md's roadmap still lists the data cache under Phase 3; the README now lists it under Phase 2.

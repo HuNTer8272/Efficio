@@ -62,6 +62,7 @@ Planned:
 Two people. Person A: Run class, env/hardware, checkpointing, storage, budget timer, emergency save, auto-shutdown, Lightning adapter. Person B: AMP, auto batch size, cache, multi-GPU, cheaper eval, budget planner, pre-flight, profiler, report, notifications, HF Trainer adapter, benchmarks. Each works on their own branch and merges into main every few days.
 
 ## Rules for working in this repo
+- Never add Co-Authored-By trailers or any AI attribution to commits or PRs. Claude must never appear as an author, co-author or contributor. Allowed human authors: Durvesh-dev and Hassaan Tole (HuNTer8272).
 - Never commit .venv, data/, efficio_checkpoints/ or secrets. Never put tokens in code.
 - The developer is on Windows with PowerShell. Give PowerShell-compatible commands.
 - Ask before git push --force, deleting files, or changing interfaces.py.

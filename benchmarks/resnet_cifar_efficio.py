@@ -33,7 +33,8 @@ if not optimize:
 
 torch.manual_seed(0)
 
-# Same order as the baseline so the seeded RNG produces the same model and data order
+# Same order as the baseline so the seeded RNG gives the same model initialization. The
+# shuffle order differs: Efficio seeds it per epoch (seed + epoch) so resume is data-exact.
 train_loader, test_loader = make_loaders(batch_size=args.batch_size, data_dir=args.data_dir)
 if args.gpu_data:
     # Same images and augmentation as the baseline's CPU pipeline (RandomCrop(32, padding=4),

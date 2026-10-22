@@ -5,7 +5,7 @@ import os
 import sys
 
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset, RandomSampler
 
 MAX_WORKERS = 8
 PREFETCH_FACTOR = 4
@@ -27,6 +27,67 @@ def _can_add_workers():
     return method == "fork"
 
 
+def _rebuild(loader, **changes):
+    """A new DataLoader with the same settings as `loader`, except `changes`."""
+    kwargs = dict(
+        batch_size=loader.batch_size,
+        sampler=loader.sampler,                     # same sampler -> same shuffle behavior
+        num_workers=loader.num_workers,
+        collate_fn=loader.collate_fn,
+        pin_memory=loader.pin_memory,
+        drop_last=loader.drop_last,
+        timeout=loader.timeout,
+        worker_init_fn=loader.worker_init_fn,
+        generator=loader.generator,
+    )
+    if loader.num_workers > 0:
+        kwargs.update(persistent_workers=loader.persistent_workers,
+                      prefetch_factor=loader.prefetch_factor,
+                      multiprocessing_context=loader.multiprocessing_context)
+    kwargs.update(changes)
+    if kwargs["num_workers"] == 0:
+        for key in ("persistent_workers", "prefetch_factor", "multiprocessing_context"):
+            kwargs.pop(key, None)
+    return DataLoader(loader.dataset, **kwargs)
+
+
+def default_shuffle_seed(loader):
+    """Base seed for seeded_shuffle: the user's DataLoader generator seed if they gave one,
+    else the global torch seed (set by torch.manual_seed). Draws nothing from any RNG."""
+    gen = getattr(loader.sampler, "generator", None) or loader.generator
+    return (gen.initial_seed() if gen is not None else torch.initial_seed()) % 2**63
+
+
+def seeded_shuffle(loader, base_seed=None):
+    """Make a shuffling DataLoader's order depend only on base_seed and the epoch, so a resumed
+    epoch is shuffled exactly like the interrupted one (the same idea as GPULoader).
+
+    Returns (loader, set_epoch). Call set_epoch(epoch) before iterating each epoch; the seed
+    in use is set_epoch.base_seed (base_seed=None picks default_shuffle_seed). Returns
+    (loader, None) when the loader does not shuffle with a plain RandomSampler.
+
+    The sampler gets its own generator (seed + epoch) for the order, and the loader gets a
+    second one (seed + epoch + offset) for the worker seeds, so neither draws from the global
+    RNG. Random augmentation inside DataLoader workers is still not reproduced exactly after
+    a resume: persistent workers keep their own RNG from one epoch to the next."""
+    if not isinstance(loader, DataLoader) or type(loader.sampler) is not RandomSampler:
+        return loader, None
+    if base_seed is None:
+        base_seed = default_shuffle_seed(loader)
+    old = loader.sampler
+    order_gen, worker_gen = torch.Generator(), torch.Generator()
+    sampler = RandomSampler(old.data_source, replacement=old.replacement,
+                            num_samples=getattr(old, "_num_samples", None), generator=order_gen)
+    new = _rebuild(loader, sampler=sampler, generator=worker_gen)
+
+    def set_epoch(epoch):
+        order_gen.manual_seed((base_seed + epoch) % 2**63)
+        worker_gen.manual_seed((base_seed + epoch + 0x9E3779B97F4A7C15) % 2**63)
+
+    set_epoch.base_seed = base_seed
+    return new, set_epoch
+
+
 def optimize_loader(loader, hw):
     """Returns (loader, changes). `changes` is a list of short descriptions. Entries that
     start with "unchanged", "already" or "note" describe something that was not changed."""
@@ -46,21 +107,11 @@ def optimize_loader(loader, hw):
         workers = 0
     pin = hw.device == "cuda"
 
-    kwargs = dict(
-        batch_size=loader.batch_size,
-        sampler=loader.sampler,                     # same sampler -> same shuffle behavior
-        num_workers=workers,
-        collate_fn=loader.collate_fn,
-        pin_memory=pin,
-        drop_last=loader.drop_last,
-        timeout=loader.timeout,
-        worker_init_fn=loader.worker_init_fn,
-        generator=loader.generator,
-    )
+    settings = dict(num_workers=workers, pin_memory=pin)
     if workers > 0:
-        kwargs.update(persistent_workers=True, prefetch_factor=PREFETCH_FACTOR,
-                      multiprocessing_context=loader.multiprocessing_context)
-    new = DataLoader(loader.dataset, **kwargs)
+        settings.update(persistent_workers=True, prefetch_factor=PREFETCH_FACTOR,
+                        multiprocessing_context=loader.multiprocessing_context)
+    new = _rebuild(loader, **settings)
 
     changes = []
     if workers != old_workers:

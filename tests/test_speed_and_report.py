@@ -244,3 +244,87 @@ def test_gpu_sampler_gives_up_without_nvidia_smi():
     s.start()                       # no new thread once we know it is missing
     assert not s._thread.is_alive()
     s.stop()
+
+
+# ---------- data-exact resume with a shuffled DataLoader ----------
+
+class _NoisyData(torch.utils.data.Dataset):
+    """Adds random noise in __getitem__, like a CPU augmentation, using the global torch RNG."""
+
+    def __init__(self, n=64):
+        self.base = _data(n)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        x, y = self.base[i]
+        return x + 0.1 * torch.rand(1), y
+
+
+def _train_shuffled(ckpt_dir, epochs, dataset, optimize, stop_after=None):
+    import efficio
+    torch.manual_seed(0)
+    loader = DataLoader(dataset, batch_size=8, shuffle=True)
+    model = nn.Linear(1, 64)
+    opt = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    run = efficio.Run(checkpoint_dir=str(ckpt_dir), verbose=False, optimize_data=optimize)
+    model, opt = run.prepare(model, opt)
+    seen = []
+    for n, (x, y) in enumerate(run.loop(loader, epochs=epochs)):
+        seen.append(y.tolist())
+        run.backward(nn.functional.cross_entropy(model(x), y))
+        run.step()
+        if stop_after is not None and n + 1 == stop_after:
+            run.save()
+            break
+    return run, model, seen
+
+
+@pytest.mark.parametrize("optimize,noisy", [(False, True), (True, False)],
+                         ids=["no-workers+cpu-augment", "optimized-2-workers"])
+def test_resume_shuffled_loader_is_data_exact(tmp_path, cpu_only, four_cores, monkeypatch,
+                                               optimize, noisy):
+    monkeypatch.setattr(dl, "_cpu_count", lambda: 2)
+    make = (lambda: _NoisyData(64)) if noisy else (lambda: _data(64))
+    full_run, full_model, full_seen = _train_shuffled(tmp_path / "full", 3, make(), optimize)
+
+    _, _, first = _train_shuffled(tmp_path / "split", 3, make(), optimize, stop_after=13)
+    resumed, model, rest = _train_shuffled(tmp_path / "split", 3, make(), optimize)
+
+    assert resumed._resumed_from == (1, 5)
+    assert first + rest == full_seen                     # same batches in the same order
+    assert resumed.state.step == full_run.state.step == 24
+    for a, b in zip(model.parameters(), full_model.parameters()):
+        assert torch.equal(a, b)
+
+
+def test_seeded_shuffle_order(four_cores):
+    loader = DataLoader(_data(40), batch_size=8, shuffle=True)
+    a, set_a = dl.seeded_shuffle(loader, base_seed=7)
+    b, set_b = dl.seeded_shuffle(loader, base_seed=7)
+    orders = []
+    for epoch in (0, 0, 1):
+        set_a(epoch)
+        orders.append(torch.cat([y for _, y in a]).tolist())
+    set_b(1)
+    assert orders[0] == orders[1] != orders[2]
+    assert torch.cat([y for _, y in b]).tolist() == orders[2]
+    assert sorted(orders[0]) == list(range(40))
+    assert set_a.base_seed == 7
+    # Unshuffled loaders are left alone
+    plain = DataLoader(_data(8), batch_size=4)
+    assert dl.seeded_shuffle(plain, 1) == (plain, None)
+
+
+def test_old_checkpoint_without_extra_still_loads(tmp_path):
+    from efficio.checkpoint import CheckpointManager
+    from efficio.interfaces import TrainState
+    model = nn.Linear(2, 2)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    mgr = CheckpointManager(str(tmp_path))
+    path = mgr.save(TrainState(step=1), model, opt)
+    payload = torch.load(path, weights_only=False)
+    del payload["extra"]                                  # what older checkpoints look like
+    torch.save(payload, path)
+    assert mgr.load(model, opt)["step"] == 1 and mgr.extra == {}
