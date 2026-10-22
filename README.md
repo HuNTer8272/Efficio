@@ -33,7 +33,9 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | channels_last memory format for convolutional models | Available |
 | GPU data pipeline for small datasets (GPULoader) | Available |
 | Auto batch size with out-of-memory recovery | Planned |
-| Preprocessing cache | Planned |
+| Image cache for large image datasets: decode and resize once, resumable build, reusable across sessions (ImageCache) | Available, needs GPU verification |
+| GPU augmentation for any DataLoader (`run.loop(..., gpu_transform=...)`, crop, resized crop, affine, flip, brightness/contrast) | Available, needs GPU verification |
+| Preprocessing cache for non-image data | Planned |
 | Use both Kaggle T4 GPUs | Planned |
 
 ### Quota stretching
@@ -63,6 +65,8 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 |---|---|
 | Detects Colab, Kaggle or local | Available |
 | Plain PyTorch support | Available |
+| Gradient clipping that works with fp16 and gradient accumulation (`run.clip_grad_norm`) | Available, needs GPU verification |
+| Validation helper: eval mode, no gradients, mixed precision (`run.evaluate_mode`) | Available, needs GPU verification |
 | Hugging Face Hub and Google Drive storage for moving runs between platforms | Planned |
 | Hugging Face Trainer and PyTorch Lightning support | Planned |
 | TensorFlow / Keras support (Keras callback for model.fit) | Planned |
@@ -74,6 +78,7 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | Basic end-of-run report | Available |
 | Profiler: data-wait time and GPU utilization | Available |
 | Improved report: setup vs training time, data-wait, GPU utilization, applied optimizations and tips | Available |
+| Report tip for image datasets decoded from files every epoch (suggests ImageCache) | Available, needs GPU verification |
 | Detailed report with GPU usage, time breakdown, wasted quota and tips | Planned |
 | Telegram and email notifications | Planned |
 
@@ -89,10 +94,16 @@ for batch in run.loop(loader, epochs=20):
     with run.autocast():                  # fp16 on T4, bf16 on newer GPUs, fp32 on CPU
         loss = compute_loss(model, batch)
     run.backward(loss)
+    run.clip_grad_norm(1.0)               # optional: real gradient units, also with fp16
     run.step()
+
+with run.evaluate_mode():                 # eval mode, no gradients, mixed precision
+    val_loss = compute_loss(model, val_batch)
 
 run.report()
 ```
+
+`run.clip_grad_norm(max_norm)` goes between `backward` and `step`. With fp16 it unscales the gradients first, so `max_norm` means the same as without mixed precision, and with gradient accumulation it only clips on the micro-batch where the optimizer steps.
 
 ### Keep a small dataset on the GPU
 
@@ -109,6 +120,32 @@ for x, y in run.loop(loader, epochs=20):
 ```
 
 `from_torchvision` reads `train_set.data` and `train_set.targets` and ignores the dataset's own CPU transform, so pass the GPU version as `transform`. For other data, use `GPULoader.from_tensors(x, y, batch_size)`. GPULoader refuses datasets that would need more than 30% of free GPU memory; use a normal DataLoader for those. The shuffle order depends only on `seed` and the epoch, so a resumed run continues with exactly the same batches.
+
+### Large image datasets
+
+Datasets of image files that don't fit in GPU memory (for example 100k PNG X-rays) are usually limited by the CPU decoding and resizing every image in every epoch. On Colab that is 2 cores. Efficio splits the work:
+
+1. `ImageCache.build` decodes and resizes every image **once**, using all CPU cores, into one uint8 array file. The build is resumable: if the session ends, running it again continues where it stopped. Once finished, it returns immediately.
+2. `CachedImageDataset` reads samples from that file as uint8 tensors. No decoding at training time, and it works with a normal DataLoader.
+3. Conversion to float, augmentation and normalization run on the GPU through `gpu_transform`.
+
+```python
+from torch.utils.data import DataLoader
+import efficio
+from efficio.data import ImageCache, CachedImageDataset
+from efficio.speed import gpu_augment as A
+
+ImageCache.build(paths, labels, "/content/cache/train", size=(224, 224), grayscale=True)
+loader = DataLoader(CachedImageDataset("/content/cache/train"), batch_size=64, shuffle=True,
+                    num_workers=2)
+augment = A.Compose([A.ToFloat(), A.RepeatChannels(3), A.RandomResizedCrop(224, scale=(0.8, 1.0)),
+                     A.RandomAffine(degrees=7, translate=(0.05, 0.05)), A.RandomHorizontalFlip(),
+                     A.Normalize(mean, std)])
+for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)):
+    ...
+```
+
+`labels` can be class ids (one per image) or a multi-hot array (one 0/1 column per label). The cache size is printed when the build finishes. Keep the cache for later sessions: on Colab copy the finished folder to Google Drive, on Kaggle save it as notebook output or a private dataset. Efficio never uploads anything by itself. `examples/large_image_dataset.py` shows the whole flow (image folder + CSV, pretrained model, multi-label loss, clipping, validation, budget and resume); run it with `--fake` to try it on CPU.
 
 ### Try the example
 
@@ -173,7 +210,8 @@ Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the
 - **Phase 1:** done and verified.
 - **Phase 2:** in progress.
   - Done so far: profiler, DataLoader tuning, channels_last, GPULoader, improved report.
-  - Remaining: image/data cache, light checkpoints, Hugging Face Hub storage, auto batch size, pre-flight check.
+  - In progress (needs GPU verification): image cache, GPU augmentation for any DataLoader, gradient clipping, evaluation helper.
+  - Remaining: data cache for non-image data, light checkpoints, Hugging Face Hub storage, auto batch size, pre-flight check.
 - **Phase 3:** Google Drive storage, auto-shutdown, budget planner, full report.
 - **Phase 4:** multi-GPU, notifications, Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support.
 - **Phase 5:** benchmarks, docs, PyPI release.

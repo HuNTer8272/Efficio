@@ -14,6 +14,7 @@ dependencies = ["torch>=2.0", "numpy"]
 hub = ["huggingface_hub"]
 light = ["bitsandbytes"]
 monitor = ["nvidia-ml-py"]
+images = ["pillow"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
