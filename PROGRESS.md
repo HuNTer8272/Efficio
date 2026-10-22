@@ -280,3 +280,40 @@ benchmarks/image_common.py (new), benchmarks/image_folder_baseline.py (new), ben
 **Open questions**
 - On fake data the PNGs were just written, so the OS file cache may hold them, which makes the baseline's file reads faster than with a real dataset in /kaggle/input or on Drive. The decode/resize/augment cost on the CPU remains, and that is what is being compared.
 - The baseline uses the same 2 DataLoader workers as the CIFAR baseline. On Kaggle (4 cores) a user might set 4; the Efficio run tunes this itself.
+
+## 2026-10-22 (parallel reads in ImageCache.build, branch feat/large-image-support)
+
+**Kaggle finding (real data: NIH Chest X-rays, 1024x1024 PNGs from /kaggle/input)**
+- `ImageCache.build` ran at only **2 images/s**.
+- Diagnosis: sequential file reads give 2.5 files/s (high per-file latency on Kaggle's dataset storage); decode + resize gives 55 images/s per core, about 200/s on 4 cores. A 32-thread parallel read test gave **71.5 files/s (28.6 MB/s)**, 28x faster. The build is limited by I/O latency, not by the CPU.
+
+**What changed**
+- `ImageCache.build(..., io_threads=32)`: a thread pool reads file bytes ahead of decoding, and worker processes decode groups of 16 images from those bytes (PIL via io.BytesIO), so reading and decoding overlap.
+  - At most 4 x io_threads files are held between reading and writing.
+  - Chunks are still recorded as done only after they are flushed, so the build stays resumable.
+  - Without a process pool (workers 0/1), each group is written right after it is decoded. Otherwise an interrupt could lose decoded but unwritten work, which the interrupt test caught on Linux.
+- Progress line: overall images/s, read files/s and decode capacity (images per second of decode work x workers). A one-time tip when reads stay below half the decode capacity after 10 s: storage is the bottleneck, try a higher io_threads (2x the current value).
+- One-time note when a cache is built on Colab/Kaggle with a CUDA GPU: building needs no GPU, so build it in a CPU-only session, save it, then train in a GPU session. Information only; nothing else changes. CUDA is checked with a lazy torch import, so the module stays torch-free at import.
+- `cache.build_stats` (seconds, images/s, read files/s, decode capacity, io_threads, workers, max in flight) after a build; None when a finished cache was reused.
+- `--io-threads` in `benchmarks/image_folder_efficio.py` (whose result file now records `cache_build_stats`) and in `examples/large_image_dataset.py`.
+- README: io_threads and the GPU-quota note in "Large image datasets".
+
+**Files touched**
+efficio/data/image_cache.py, tests/test_image_cache.py, benchmarks/image_folder_efficio.py, examples/large_image_dataset.py, README.md, PROGRESS.md
+
+**How it was tested**
+- pytest: 70 passed on Windows (torch 2.5.1+cpu) and 3 times in a row on Linux/WSL (torch 2.14.1+cpu). New or updated tests:
+  - io_threads=1, io_threads=8 and io_threads=8 with 2 decode processes give identical caches, equal to decoding from the file paths
+  - interrupt and resume (decodes only the missing chunks, same result as a clean build)
+  - the in-flight limit (never more than 4 x io_threads files held, and it does read ahead up to the limit)
+  - the storage-bottleneck tip
+  - the GPU note for kaggle/colab/local and with/without CUDA, shown at most once
+- Byte-identical output: the previous implementation (git HEAD before this change) and the new one built caches from 40 PNGs (RGB, grayscale, RGBA, palette, 16-bit) in RGB and grayscale mode, and the images.npy files were byte-identical.
+- Simulated slow storage on Linux (each read delayed by 50 ms, 300 images, 2 decode processes): io_threads=1 gave 18-19 images/s, io_threads=32 gave about 570 images/s. This is only a simulation of the latency, not a Kaggle measurement.
+- Smoke runs of the image-folder benchmark (resume check OK, build stats saved) and of the example with --io-threads.
+
+**Still needs a GPU/Kaggle test**
+- Rerun the build on NIH Chest X-rays from /kaggle/input and record the images/s after the fix (to be filled in here when measured), then the image-folder training runs.
+
+**Open questions**
+- If 32 threads are still latency-bound on Kaggle, io_threads=64 may help; the progress tip will say so. Very high values mostly add memory (4 x io_threads files in flight, about 1 MB each for 1024x1024 PNGs).

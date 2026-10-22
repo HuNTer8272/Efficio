@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument("--cache", default="./image_cache", help="where the decoded cache goes")
     p.add_argument("--size", type=int, default=224)
     p.add_argument("--grayscale", action="store_true", help="store 1 channel (e.g. X-rays)")
+    p.add_argument("--io-threads", type=int, default=32,
+                   help="parallel file reads for the cache build (raise on slow storage)")
     p.add_argument("--model", default="resnet18", choices=["resnet18", "resnet50", "densenet121"])
     p.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=None,
                    help="ImageNet weights (default: on, off with --fake)")
@@ -127,9 +129,9 @@ def main():
     split = int(0.9 * len(paths))
     size = (args.size, args.size)
     ImageCache.build(paths[:split], labels[:split], os.path.join(args.cache, "train"),
-                     size=size, grayscale=args.grayscale)
+                     size=size, grayscale=args.grayscale, io_threads=args.io_threads)
     ImageCache.build(paths[split:], labels[split:], os.path.join(args.cache, "val"),
-                     size=size, grayscale=args.grayscale)
+                     size=size, grayscale=args.grayscale, io_threads=args.io_threads)
 
     # 2. Plain DataLoaders over uint8 arrays: no decoding, almost no CPU work
     train = DataLoader(CachedImageDataset(os.path.join(args.cache, "train")),
