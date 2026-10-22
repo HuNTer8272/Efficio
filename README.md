@@ -147,7 +147,7 @@ for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)
 
 `labels` can be class ids (one per image) or a multi-hot array (one 0/1 column per label). The cache size is printed when the build finishes.
 
-Reading and decoding overlap: `io_threads` threads (default 32) read file bytes ahead while worker processes decode them, with at most `4 x io_threads` files held in memory. This matters on network-backed storage such as Kaggle's `/kaggle/input`, where each file read has high latency: reading one file at a time measured 2.5 files/s on NIH Chest X-rays, against 71.5 files/s with 32 parallel reads. The progress line shows the overall images/s plus read files/s and decode capacity; if reads stay far below decoding, it suggests a higher `io_threads` (for example 64).
+Reading and decoding overlap: `io_threads` threads (default 32) read file bytes ahead while worker processes decode them, with at most `4 x io_threads` files held in memory. This matters on network-backed storage such as Kaggle's `/kaggle/input`, where each file read has high latency: reading one file at a time measured 2.5 files/s on NIH Chest X-rays, against 71.5 files/s with 32 parallel reads. With the overlapped reads, the cache build on cold NIH files ran at 139 images/s with `io_threads=32` and 148 images/s with 64, close to what 4 CPU cores can decode; before parallel reads it ran at 2 images/s. The progress line shows the overall images/s plus read files/s and decode capacity; if reads stay far below decoding, it suggests a higher `io_threads` (for example 64).
 
 Building the cache doesn't need a GPU. To save GPU quota, build it once in a CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: Google Drive), then train in a GPU session. Efficio prints this note when it builds a cache on Colab or Kaggle with a GPU attached. Keep the cache for later sessions: on Colab copy the finished folder to Google Drive, on Kaggle save it as notebook output or a private dataset. Efficio never uploads anything by itself. `examples/large_image_dataset.py` shows the whole flow (image folder + CSV, pretrained model, multi-label loss, clipping, validation, budget and resume); run it with `--fake` to try it on CPU.
 
@@ -215,17 +215,20 @@ Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the
 
 5,000 randomly sampled 1024x1024 PNGs read from `/kaggle/input` (4,500 train / 500 validation), 14 findings as a multi-label target, ResNet-18 at 224x224, batch size 64, 4 epochs. The baseline decodes, resizes and augments every PNG on the CPU in each epoch; Efficio builds an ImageCache once and augments on the GPU (`benchmarks/image_folder_*.py`).
 
-| Run | Avg epoch | Epochs per hour | GPU utilization | Data-wait | Validation AUROC |
+**Headline comparison (same Kaggle session):** with the CPU pipeline tuned to use all 4 cores, the baseline trained at 103.0 epochs per hour and Efficio at 625.6, so Efficio was **6.07x faster per epoch** in this setup.
+
+| Run (same session) | Avg epoch | Epochs per hour | GPU utilization | Data-wait | Validation AUROC |
 |---|---|---|---|---|---|
-| Plain PyTorch (fp32, CPU decoding, 2 DataLoader workers) | 54.7 s | 65.9 | 24% | 88% | 0.670 |
-| Efficio (fp16, ImageCache + GPU augmentation) | 5.1 s | 701.6 | 77% | 0.3% | 0.645 |
+| Plain PyTorch (fp32, CPU decoding, 4 DataLoader workers) | 34.9 s | 103.0 | 37% | 74% | 0.615 |
+| Efficio (fp16, ImageCache + GPU augmentation) | 5.8 s | 625.6 | 78% | 0.3% | 0.673 |
 
-Building the cache took 105 s for all 5,000 images (48 images/s, limited by Kaggle's file storage); later runs reuse it in 0 s. Read these numbers with their limits:
+An earlier session also measured the baseline with 2 workers: 54.7 s per epoch (65.9 epochs per hour, 24% GPU utilization, 88% data-wait, AUROC 0.670), against 5.1 s per epoch for Efficio in that session. Efficio's epoch time varied by about 10-15% between sessions (5.1 to 5.8 s), so compare runs from the same session.
 
-- **Baseline workers:** the baseline used 2 DataLoader workers on Kaggle's 4 CPU cores. A 4-worker baseline would be faster, so this is not the gap to a well-tuned pipeline. A 4-worker run is planned.
+Building the cache took about 36 s for all 5,000 images on cold files (139 images/s); later runs reuse it in 0 s. Even with 4 workers, the baseline spends 74% of its time waiting for the CPU to decode PNGs. Read these numbers with their limits:
+
 - **Warm file cache:** the baseline ran after the cache build, so the PNGs were already in RAM. That makes its file reads faster than on a cold start.
 - **Single runs:** each row is one 4-epoch run. The numbers will be averaged over 3 runs before the release.
-- **Accuracy:** compare AUROC, not label accuracy (most labels are 0, so per-label accuracy is about 95% for every run). With 4 epochs on 4,500 images the AUROC difference between the two runs is within run-to-run noise; matching accuracy still has to be shown with longer runs.
+- **Accuracy:** compare AUROC, not label accuracy (most labels are 0, so per-label accuracy is about 95% for every run). Across the NIH runs so far, AUROC ranged from 0.615 to 0.673 for both pipelines, so 4 epochs on 4,500 images can't show an accuracy difference either way; that needs longer runs.
 
 ## Roadmap
 

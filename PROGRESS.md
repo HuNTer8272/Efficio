@@ -365,3 +365,30 @@ efficio/data/image_cache.py, tests/test_image_cache.py, benchmarks/image_folder_
 
 **Open questions**
 - Repeat each image-folder run 3 times before quoting a ratio, as for CIFAR.
+
+## 2026-10-22 (NIH Chest X-rays, second Kaggle session: out-of-order build, 4-worker baseline)
+
+**Kaggle run (commit fa066e0, Tesla T4, new session, so the NIH files were cold)**
+Two non-overlapping 5,000-image samples from the same seed-0 shuffle: A (rows 0-4,999, the same sample as the first session) and B (rows 5,000-9,999).
+- **Cache build, cold files, sample A, io_threads=32: 139 images/s** (train: 4,500 images in 32.46 s = 138.6 images/s, decode capacity 170.5/s; val: 500 in 3.59 s = 139.4/s; max in flight 128). The first session, before the out-of-order writes, built the same sample at 48 images/s; before parallel reads it was 2 images/s. Reads are now close to the decode capacity, so the storage tip correctly stayed quiet; the 4 CPU cores decoding 1024x1024 PNGs are now the limit.
+- **Cache build, cold files, sample B, io_threads=64: 148 images/s** (train: 4,500 images in 30.36 s = 148.2/s, decode capacity 161.4/s; val: 500 in 3.87 s = 129.1/s; max in flight 256; values read from the notebook screenshot). That is only about 7% more than with 32 threads because decoding now sets the pace, so the default of 32 stays.
+- At about 140 images/s, a cache of all 112,120 NIH images would take about 13 minutes (extrapolated, not measured), against about 39 minutes at 48/s and about 15.6 hours at 2/s.
+- **Baseline with 4 workers** (warm files, like the 2-worker run): 34.94 s per epoch, 103.0 epochs/hour, GPU utilization 37.2%, data-wait 74.4%, AUROC 0.615. With 2 workers (first session) it was 54.65 s per epoch: 4 workers make the baseline 1.56x faster, but it still waits for the CPU most of the time.
+- **Efficio rerun** (cache reused, --no-resume-test): 5.76 s per epoch, 625.6 epochs/hour, GPU utilization 77.8%, data-wait 0.3%, AUROC 0.673. The resume fields are now empty, as intended, and num_workers is recorded. The first session measured 5.09-5.13 s, so epoch times vary by about 10-15% between Kaggle sessions.
+- **Headline comparison, same session:** 625.6 vs 103.0 epochs/hour = 6.07x against the 4-worker baseline. compare.py also prints 9.50x against the 2-worker baseline, but that baseline came from the first session, so that ratio mixes sessions.
+- AUROC across all NIH runs: 0.615-0.673 for both pipelines. Single 4-epoch runs on 4,500 images can't show an accuracy difference; that needs longer runs.
+
+**What changed**
+- Saved benchmarks/results/imagefolder-baseline-4workers_kaggle_20261022_154332.json and imagefolder-efficio_kaggle_20261022_154436.json, rebuilt from the printed JSON. The cache-build numbers above have no result file (cells 3-4 called ImageCache.build directly) and are recorded only here.
+- README: the NIH section now leads with the same-session 4-worker comparison (6.07x), keeps the 2-worker numbers as a note, and keeps the caveats (warm file cache, single runs, AUROC needs longer runs). The io_threads paragraph has the measured build rates.
+- Decided not to use Image.reduce before resizing: 13 minutes for the full dataset is acceptable, and it could change the cache output.
+
+**Files touched**
+benchmarks/results/ (2 new files), README.md, PROGRESS.md
+
+**How it was tested**
+- compare.py on the saved files reproduces the Kaggle comparison: 6.07x against the 4-worker baseline, 9.50x against the 2-worker one.
+
+**Still needs a GPU test**
+- clip_grad_norm values with the CUDA fp16 scaler; the ImageCache report tip on a real run; the large-image features on Colab.
+- 3 repeats of each image-folder run before quoting a ratio in a release.
