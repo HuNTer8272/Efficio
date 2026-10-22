@@ -33,8 +33,8 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | channels_last memory format for convolutional models | Available |
 | GPU data pipeline for small datasets (GPULoader) | Available |
 | Auto batch size with out-of-memory recovery | Planned |
-| Image cache for large image datasets: decode and resize once, resumable build, reusable across sessions (ImageCache) | Available, needs GPU verification |
-| GPU augmentation for any DataLoader (`run.loop(..., gpu_transform=...)`, crop, resized crop, affine, flip, brightness/contrast) | Available, needs GPU verification |
+| Image cache for large image datasets: decode and resize once, parallel file reads, resumable build, reusable across sessions (ImageCache) | Available |
+| GPU augmentation for any DataLoader (`run.loop(..., gpu_transform=...)`, crop, resized crop, affine, flip, brightness/contrast) | Available |
 | Preprocessing cache for non-image data | Planned |
 | Use both Kaggle T4 GPUs | Planned |
 
@@ -66,7 +66,7 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | Detects Colab, Kaggle or local | Available |
 | Plain PyTorch support | Available |
 | Gradient clipping that works with fp16 and gradient accumulation (`run.clip_grad_norm`) | Available, needs GPU verification |
-| Validation helper: eval mode, no gradients, mixed precision (`run.evaluate_mode`) | Available, needs GPU verification |
+| Validation helper: eval mode, no gradients, mixed precision (`run.evaluate_mode`) | Available |
 | Hugging Face Hub and Google Drive storage for moving runs between platforms | Planned |
 | Hugging Face Trainer and PyTorch Lightning support | Planned |
 | TensorFlow / Keras support (Keras callback for model.fit) | Planned |
@@ -175,6 +175,8 @@ Note: on Kaggle, Efficio currently trains on one of the two GPUs.
 
 The Phase 2 speed and visibility features (DataLoader tuning, channels_last, GPULoader, profiler and the improved report) have been verified on Colab (1x Tesla T4) and Kaggle (2x Tesla T4, one used), both in fp16. We checked the tests, budget stop and resume, and the ResNet-18 benchmark below on both platforms, plus GPULoader resume and the SIGTERM save on Colab.
 
+The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4, fp16, channels_last) with real NIH Chest X-ray PNGs: cache build and reuse, training, and a budget stop with resume that ended at the expected step. They have not been run on Colab yet. `clip_grad_norm` has run on a Kaggle T4 without errors, but its values with the fp16 scaler on CUDA are only checked by the CPU tests so far.
+
 ## Measuring results
 
 We will benchmark three workloads, each with and without Efficio:
@@ -209,12 +211,28 @@ Same settings as on Colab.
 
 Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the GPU busy (2% data-wait) and GPULoader adds no speed there. GPULoader helps when the CPU is the bottleneck, as on Colab. The report only suggests it in that case.
 
+### Large images from disk: NIH Chest X-rays, Kaggle, Tesla T4
+
+5,000 randomly sampled 1024x1024 PNGs read from `/kaggle/input` (4,500 train / 500 validation), 14 findings as a multi-label target, ResNet-18 at 224x224, batch size 64, 4 epochs. The baseline decodes, resizes and augments every PNG on the CPU in each epoch; Efficio builds an ImageCache once and augments on the GPU (`benchmarks/image_folder_*.py`).
+
+| Run | Avg epoch | Epochs per hour | GPU utilization | Data-wait | Validation AUROC |
+|---|---|---|---|---|---|
+| Plain PyTorch (fp32, CPU decoding, 2 DataLoader workers) | 54.7 s | 65.9 | 24% | 88% | 0.670 |
+| Efficio (fp16, ImageCache + GPU augmentation) | 5.1 s | 701.6 | 77% | 0.3% | 0.645 |
+
+Building the cache took 105 s for all 5,000 images (48 images/s, limited by Kaggle's file storage); later runs reuse it in 0 s. Read these numbers with their limits:
+
+- **Baseline workers:** the baseline used 2 DataLoader workers on Kaggle's 4 CPU cores. A 4-worker baseline would be faster, so this is not the gap to a well-tuned pipeline. A 4-worker run is planned.
+- **Warm file cache:** the baseline ran after the cache build, so the PNGs were already in RAM. That makes its file reads faster than on a cold start.
+- **Single runs:** each row is one 4-epoch run. The numbers will be averaged over 3 runs before the release.
+- **Accuracy:** compare AUROC, not label accuracy (most labels are 0, so per-label accuracy is about 95% for every run). With 4 epochs on 4,500 images the AUROC difference between the two runs is within run-to-run noise; matching accuracy still has to be shown with longer runs.
+
 ## Roadmap
 
 - **Phase 1:** done and verified.
 - **Phase 2:** in progress.
   - Done so far: profiler, DataLoader tuning, channels_last, GPULoader, improved report.
-  - In progress (needs GPU verification): image cache, GPU augmentation for any DataLoader, gradient clipping, evaluation helper.
+  - Image cache, GPU augmentation for any DataLoader and the evaluation helper: verified on Kaggle (Colab still to run). Gradient clipping: needs GPU verification.
   - Remaining: data cache for non-image data, light checkpoints, Hugging Face Hub storage, auto batch size, pre-flight check.
 - **Phase 3:** Google Drive storage, auto-shutdown, budget planner, full report.
 - **Phase 4:** multi-GPU, notifications, Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support.

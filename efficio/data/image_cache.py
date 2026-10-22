@@ -29,8 +29,7 @@ import json
 import os
 import time
 from collections import deque
-from concurrent.futures import (FIRST_COMPLETED, Future, ProcessPoolExecutor,
-                                ThreadPoolExecutor, wait)
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 
 import numpy as np
 
@@ -238,47 +237,46 @@ class ImageCache:
         readers = ThreadPoolExecutor(max_workers=io_threads)
         decoders = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
         try:
-            reading, decoding, in_flight = deque(), deque(), 0
+            reading, decoding, in_flight = [], {}, 0
+
+            def write(g, arr, seconds):
+                nonlocal in_flight
+                images[g[0]:g[-1] + 1] = arr          # each group has its own rows: any order
+                in_flight -= len(g)
+                c = g[0] // chunk_size
+                left_in_chunk[c] -= len(g)
+                if left_in_chunk[c] == 0:            # a chunk counts once all of it is written
+                    finish_chunk(c)
+                progress.decoded(len(g), seconds)
+
             while groups or reading or decoding:
-                # 1. Read ahead, as long as the in-flight limit allows
+                # 1. Read ahead (in file order), as long as the in-flight limit allows
                 while groups and in_flight + len(groups[0]) <= limit:
                     g = groups.popleft()
                     reading.append((g, [readers.submit(_read_file, paths[i]) for i in g]))
                     in_flight += len(g)
                     progress.max_in_flight = max(progress.max_in_flight, in_flight)
                 moved = False
-                # 2. Groups whose files are all read go to the decoders (in order)
-                while reading and all(f.done() for f in reading[0][1]):
-                    g, futures = reading.popleft()
+                # 2. Any group whose files are all read goes to decoding, so one slow file
+                #    only holds back its own group
+                for item in [r for r in reading if all(f.done() for f in r[1])]:
+                    reading.remove(item)
+                    g, futures = item
                     blobs = [f.result() for f in futures]        # raises read errors
                     progress.read(len(g))
                     args = (blobs, [paths[i] for i in g], (h, w), grayscale)
                     if decoders is None:
-                        future = Future()
-                        future.set_result(_decode_group(*args))
+                        write(g, *_decode_group(*args))          # nothing waits unsaved
                     else:
-                        future = decoders.submit(_decode_group, *args)
-                    decoding.append((g, future))
+                        decoding[decoders.submit(_decode_group, *args)] = g
                     moved = True
-                    if decoders is None:
-                        break           # write it before decoding more: nothing waits unsaved
-                # 3. Write decoded groups (in order); a chunk counts once all of it is on disk
-                while decoding and decoding[0][1].done():
-                    g, future = decoding.popleft()
-                    arr, seconds = future.result()
-                    images[g[0]:g[-1] + 1] = arr
-                    in_flight -= len(g)
-                    c = g[0] // chunk_size
-                    left_in_chunk[c] -= len(g)
-                    if left_in_chunk[c] == 0:
-                        finish_chunk(c)
-                    progress.decoded(len(g), seconds)
+                # 3. Write every finished group, in whatever order they finish
+                for future in [f for f in decoding if f.done()]:
+                    write(decoding.pop(future), *future.result())
                     moved = True
                 if not moved:
-                    pending = [f for f in reading[0][1] if not f.done()] if reading else []
-                    if decoding:
-                        pending.append(decoding[0][1])
-                    wait(pending, return_when=FIRST_COMPLETED)
+                    pending = [f for _, futures in reading for f in futures if not f.done()]
+                    wait(pending + list(decoding), return_when=FIRST_COMPLETED)
         finally:
             # On an interrupt, drop queued work instead of finishing it first
             readers.shutdown(wait=True, cancel_futures=True)

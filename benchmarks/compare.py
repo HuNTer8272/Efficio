@@ -50,8 +50,9 @@ def print_table(results):
 
 
 def print_speedups(results):
-    """Speedup of the latest run of each kind over the latest baseline run (a run name
-    ending in "baseline"), per benchmark and platform."""
+    """Speedup of the latest run of each kind over the latest run of each baseline (a run
+    name containing "baseline", e.g. imagefolder-baseline-4workers), per benchmark and
+    platform."""
     print()
     for bench, platform in sorted({(r["benchmark"], r["platform"]) for r in results}):
         latest = {}
@@ -59,17 +60,19 @@ def print_speedups(results):
             if (r["benchmark"], r["platform"]) == (bench, platform):
                 if r["run"] not in latest or r.get("timestamp", "") > latest[r["run"]].get("timestamp", ""):
                     latest[r["run"]] = r
-        bases = [name for name in latest if name.endswith("baseline")]
-        others = sorted(name for name in latest if not name.endswith("baseline"))
+        bases = sorted(name for name in latest if "baseline" in name)
+        others = sorted(name for name in latest if "baseline" not in name)
         if not bases or not others:
             missing = "baseline" if not bases else "efficio"
             print(f"{bench} / {platform}: no {missing} run yet, can't compute a speedup")
             continue
-        base = latest[bases[0]]["epochs_per_hour"]
-        for name in others:
-            eff = latest[name]["epochs_per_hour"]
-            print(f"{bench} / {platform}: {name} {eff} vs baseline {base} epochs/hour "
-                  f"-> {eff / base:.2f}x speedup")
+        for base_name in bases:
+            base = latest[base_name]["epochs_per_hour"]
+            label = "baseline" if len(bases) == 1 else base_name
+            for name in others:
+                eff = latest[name]["epochs_per_hour"]
+                print(f"{bench} / {platform}: {name} {eff} vs {label} {base} epochs/hour "
+                      f"-> {eff / base:.2f}x speedup")
 
 
 if __name__ == "__main__":

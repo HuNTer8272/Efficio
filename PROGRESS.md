@@ -317,3 +317,51 @@ efficio/data/image_cache.py, tests/test_image_cache.py, benchmarks/image_folder_
 
 **Open questions**
 - If 32 threads are still latency-bound on Kaggle, io_threads=64 may help; the progress tip will say so. Very high values mostly add memory (4 x io_threads files in flight, about 1 MB each for 1024x1024 PNGs).
+
+## 2026-10-22 (NIH Chest X-ray results on Kaggle, out-of-order cache writes, branch feat/large-image-support)
+
+**Kaggle run (commit d784423, Tesla T4, NIH Chest X-rays from /kaggle/input)**
+5,000 randomly sampled 1024x1024 PNGs (seed 0; 4,500 train / 500 val), 14 findings multi-hot, ResNet-18 at 224, batch 64, 4 epochs.
+- **Cache build: 2 -> 48 images/s.** Before the parallel reads, the build ran at 2 images/s. With io_threads=32 the train cache (4,500 images) took 93.8 s at 48 images/s; both caches took 105.1 s (215.6 + 24.0 MB). For comparison, a 32-thread raw read test earlier gave 71.5 files/s, and sequential reads 2.5 files/s.
+  - Decode capacity was 232 images/s, so storage was still the limit, and the progress tip correctly suggested io_threads=64.
+  - `max_in_flight` reached the 128 limit. Groups were processed strictly in order, so a slow file held back the files behind it; this is fixed below.
+- The one-time GPU-quota note printed (GPU session), as intended.
+- **Resume on real data, on the GPU:** the budget stopped the run at epoch 3, batch 36 (step 176 = 2 x 70 + 36). A fresh Run resumed from (2, 36) and finished at step 280 = expected 280 (resume.ok true).
+- Efficio training: 5.09 s per epoch (resume run) and 5.13 s (rerun with the cache reused in 0 s), GPU utilization 76-77%, data-wait 0.3%.
+- Baseline (fp32, CPU decoding, 2 workers): 54.65 s per epoch, GPU utilization 23.8%, data-wait 87.9%.
+- Validation AUROC: baseline 0.670, Efficio 0.645 / 0.645. Per-label accuracy is about 95% for all runs because most labels are 0, so it doesn't say much.
+- compare.py: 701.6 vs 65.9 epochs/hour (10.65x) in this setup.
+  - Caveats: the baseline used 2 workers on 4 cores; it read warm files (after the cache build); single 4-epoch runs; AUROC differences at this scale are noise.
+  - The README shows the table with these caveats and does not quote the ratio as a general claim.
+- Saved as benchmarks/results/imagefolder-efficio_kaggle_20261022_151028.json, imagefolder-efficio_kaggle_20261022_151159.json and imagefolder-baseline_kaggle_20261022_151551.json, rebuilt from the printed JSON. The 151159 file predates the --no-resume-test fix below and still has stopped_at [4, 0, 280] and ok true; those fields carry no resume information there.
+
+**What changed**
+- ImageCache.build writes groups as they finish instead of strictly in order:
+  - a group goes to decoding as soon as its own files are read, and decoded groups are written in completion order
+  - each group writes only its own rows, and a chunk is recorded as done only when all its images are written and flushed, so resume stays correct and the output byte-identical
+  - reads are still submitted in file order, within the same 4 x io_threads in-flight limit
+- `image_folder_efficio.py --no-resume-test`: the resume fields stay empty (stopped_at/resumed_from [], final/expected step and ok None), and no "resume check" line is printed.
+- `image_folder_baseline.py --workers N` (default 2, so earlier results stay comparable). Runs with another worker count are saved as `imagefolder-baseline-<N>workers`. Both scripts record `num_workers`.
+- compare.py: every run whose name contains "baseline" is a baseline; Efficio runs are compared against each baseline.
+- README:
+  - ImageCache, GPU augmentation for any DataLoader and evaluate_mode marked Available (verified on the Kaggle T4 with real data; Colab not yet run)
+  - clip_grad_norm, shuffled-resume order, and the ImageCache report tip stay "needs GPU verification"
+  - NIH results table with the caveats
+
+**Files touched**
+efficio/data/image_cache.py, tests/test_image_cache.py, benchmarks/image_folder_efficio.py, benchmarks/image_folder_baseline.py, benchmarks/compare.py, benchmarks/results/ (3 new files), README.md, PROGRESS.md
+
+**How it was tested**
+- pytest: 71 passed on Windows and 3 times in a row on Linux/WSL. New and updated tests:
+  - an out-of-order test: the first group is slow to read, so later groups are written first and group 0 last, and the cache is identical to a sequential build with all chunks recorded
+  - the interrupt test is now independent of completion order: exactly the decoded chunks are recorded, and the resume decodes only the missing ones
+- Byte-identical: the original implementation (before parallel reads) and the new one gave byte-identical images.npy files for RGB/grayscale/RGBA/palette/16-bit PNGs in both output modes.
+- Linux smoke runs: baseline --workers 4 saved as imagefolder-baseline-4workers; the Efficio --no-resume-test run leaves the resume fields empty; compare.py groups both baselines.
+
+**Still needs a GPU/Kaggle test**
+- Cache build speed with the out-of-order writes on cold NIH files (io_threads 32 and 64).
+- The image-folder baseline with --workers 4 for a fair comparison.
+- clip_grad_norm values with the CUDA fp16 scaler; the ImageCache report tip on a real run; everything on Colab.
+
+**Open questions**
+- Repeat each image-folder run 3 times before quoting a ratio, as for CIFAR.

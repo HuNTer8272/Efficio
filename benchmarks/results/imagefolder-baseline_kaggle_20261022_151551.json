@@ -1,0 +1,29 @@
+{
+  "run": "imagefolder-baseline",
+  "platform": "kaggle",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu128",
+  "timestamp": "20261022_151551",
+  "epochs": 4,
+  "epoch_times_s": [
+    55.602,
+    54.74,
+    54.937,
+    54.275
+  ],
+  "avg_epoch_s_excl_first": 54.651,
+  "epochs_per_hour": 65.873,
+  "images_per_s": 82.0,
+  "peak_mem_gb": 1.637,
+  "avg_gpu_util_pct": 23.8,
+  "test_acc_pct": 94.97,
+  "benchmark": "image-folder",
+  "precision": "fp32",
+  "batch_size": 64,
+  "image_size": 224,
+  "train_images": 4500,
+  "fake_data": false,
+  "data_wait_pct": 87.9,
+  "val_auroc": 0.6697,
+  "cache_build_s": 0.0
+}

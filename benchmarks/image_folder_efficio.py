@@ -126,9 +126,13 @@ def main():
             train_s += run.profiler.train_s
 
     expected_steps = args.epochs * len(train_loader)
-    resume = {"tested": resume_test, "stopped_at_epoch_batch_step": list(stopped_at),
-              "resumed_from": list(run._resumed_from or ()), "final_step": run.state.step,
-              "expected_step": expected_steps, "ok": run.state.step == expected_steps}
+    if resume_test:
+        resume = {"tested": True, "stopped_at_epoch_batch_step": list(stopped_at),
+                  "resumed_from": list(run._resumed_from or ()), "final_step": run.state.step,
+                  "expected_step": expected_steps, "ok": run.state.step == expected_steps}
+    else:                                    # no budget stop: nothing to report
+        resume = {"tested": False, "stopped_at_epoch_batch_step": [], "resumed_from": [],
+                  "final_step": None, "expected_step": None, "ok": None}
 
     scores, targets = [], []
     with run.evaluate_mode():
@@ -139,12 +143,14 @@ def main():
     scores, targets = torch.cat(scores), torch.cat(targets)
     run.report()
     complete = [t for _, t, ok in times if ok]
-    print(f"resume check: final step {run.state.step}, expected {expected_steps} -> "
-          f"{'OK' if resume['ok'] else 'MISMATCH'}")
+    if resume_test:
+        print(f"resume check: final step {run.state.step}, expected {expected_steps} -> "
+              f"{'OK' if resume['ok'] else 'MISMATCH'}")
     save_results("imagefolder-efficio", complete, len(train_loader) * args.batch_size,
                  sampler.average, ic.label_accuracy(scores, targets),
                  extra={"benchmark": ic.BENCHMARK, "precision": run.hw.precision,
                         "batch_size": args.batch_size, "image_size": s,
+                        "num_workers": ic.NUM_WORKERS,
                         "train_images": len(train_paths), "fake_data": args.fake,
                         "data_wait_pct": round(100 * data_wait_s / train_s, 1) if train_s else 0.0,
                         "val_auroc": round(ic.mean_auroc(scores, targets), 4),

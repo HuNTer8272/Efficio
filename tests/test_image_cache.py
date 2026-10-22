@@ -78,7 +78,10 @@ def test_interrupted_build_resumes_without_redoing_chunks(tmp_path, monkeypatch)
     with pytest.raises(KeyboardInterrupt):
         ImageCache.build(paths, list(range(10)), tmp_path / "cache", size=8, workers=0,
                          chunk_size=3, verbose=False)
-    assert json.loads((tmp_path / "cache" / "progress.json").read_text())["done"] == [0, 1]
+    # Chunks may finish in any order; exactly the two decoded ones are recorded as done
+    chunk_of = {str(path): i // 3 for i, path in enumerate(paths)}
+    done = json.loads((tmp_path / "cache" / "progress.json").read_text())["done"]
+    assert sorted(done) == sorted(chunk_of[n] for n in calls) and len(done) == 2
     with pytest.raises(FileNotFoundError):
         CachedImageDataset(tmp_path / "cache")          # not finished yet
 
@@ -86,7 +89,8 @@ def test_interrupted_build_resumes_without_redoing_chunks(tmp_path, monkeypatch)
     monkeypatch.setattr(ic, "_decode_group", lambda *a: calls.append(a[1][0]) or real(*a))
     ImageCache.build(paths, list(range(10)), tmp_path / "cache", size=8, workers=0,
                      chunk_size=3, verbose=False)
-    assert calls == [str(paths[6]), str(paths[9])]      # only chunks 2 and 3 were decoded
+    # Only the two missing chunks (of 4) were decoded
+    assert sorted(chunk_of[n] for n in calls) == sorted({0, 1, 2, 3} - set(done))
 
     clean = ImageCache.build(paths, list(range(10)), tmp_path / "clean", size=8, workers=0,
                              chunk_size=3, verbose=False)
@@ -206,3 +210,32 @@ def test_gpu_note(tmp_path, monkeypatch, capsys, platform, cuda, shown):
     ImageCache.build(paths, [0] * 3, tmp_path / "b", size=4, workers=0)   # a second build
     out = capsys.readouterr().out
     assert out.count("doesn't need a GPU") == (1 if shown else 0)        # at most once
+
+
+def test_out_of_order_completion_gives_identical_cache(tmp_path, monkeypatch):
+    """The first files are the slowest to read: later groups finish and are written first,
+    and the cache is still identical to a strictly sequential build."""
+    paths = _pngs(tmp_path / "img", 40)
+    reference = ImageCache.build(paths, list(range(40)), tmp_path / "seq", size=(9, 7),
+                                 io_threads=1, workers=0, chunk_size=5, verbose=False)
+    real_read, real_decode = ic._read_file, ic._decode_group
+    order = []
+
+    def slow_first(path):
+        index = int(os.path.basename(path).split(".")[0])
+        time.sleep(0.2 if index < 4 else 0.0)            # files 0-3 (group 0) are slow
+        return real_read(path)
+
+    def record(blobs, names, size, grayscale):
+        order.append(int(os.path.basename(names[0]).split(".")[0]))
+        return real_decode(blobs, names, size, grayscale)
+
+    monkeypatch.setattr(ic, "_read_file", slow_first)
+    monkeypatch.setattr(ic, "_decode_group", record)
+    ImageCache.build(paths, list(range(40)), tmp_path / "ooo", size=(9, 7), io_threads=8,
+                     workers=0, chunk_size=5, verbose=False)     # up to 32 files in flight
+    assert order != sorted(order) and order[-1] == 0      # group 0 was written last
+    assert np.array_equal(np.load(tmp_path / "ooo" / "images.npy"),
+                          np.load(os.path.join(reference.out_dir, "images.npy")))
+    progress = json.loads((tmp_path / "ooo" / "progress.json").read_text())
+    assert sorted(progress["done"]) == list(range(8))
