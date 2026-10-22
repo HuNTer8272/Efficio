@@ -53,7 +53,8 @@ Each item is marked **Available** (in the library and verified on a GPU), **Avai
 | Saves model, optimizer, scheduler, gradient scaler, RNG state and exact position | Available |
 | Atomic saves, so a crash mid-save never corrupts the last checkpoint | Available |
 | Periodic and emergency saves | Available |
-| Exact mid-epoch resume | Available |
+| Exact mid-epoch resume: same step count, and the same data order with GPULoader or unshuffled data | Available |
+| Same data order after resume with a shuffled DataLoader (per-epoch seeded shuffle) | Available, needs GPU verification |
 | Light checkpoint mode, about 3x smaller | Planned |
 
 ### Works everywhere
@@ -141,7 +142,7 @@ We will benchmark three workloads, each with and without Efficio:
 - A DistilBERT fine-tune
 - A small LoRA run
 
-We report epochs per quota hour.
+We report epochs per quota hour. The numbers below are single 5-epoch runs; before the release they will be averaged over 3 runs.
 
 ### ResNet-18 on CIFAR-10, Colab, 1x Tesla T4
 
@@ -170,8 +171,10 @@ Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the
 ## Roadmap
 
 - **Phase 1:** done and verified.
-- **Phase 2:** Hugging Face Hub storage, light checkpoints, auto batch size, pre-flight check.
-- **Phase 3:** Google Drive storage, auto-shutdown, data cache, budget planner, full report.
+- **Phase 2:** in progress.
+  - Done so far: profiler, DataLoader tuning, channels_last, GPULoader, improved report.
+  - Remaining: image/data cache, light checkpoints, Hugging Face Hub storage, auto batch size, pre-flight check.
+- **Phase 3:** Google Drive storage, auto-shutdown, budget planner, full report.
 - **Phase 4:** multi-GPU, notifications, Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support.
 - **Phase 5:** benchmarks, docs, PyPI release.
 

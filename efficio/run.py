@@ -19,10 +19,11 @@ import time
 import torch
 
 from .checkpoint import CheckpointManager
+from .checkpoint.manager import _rng_state, _set_rng_state
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
 from .report.profiler import GpuUtilSampler, Profiler, tips
-from .speed.dataloader import optimize_loader
+from .speed.dataloader import optimize_loader, seeded_shuffle
 from .speed.gpu_data import GPULoader, fits_on_gpu
 from .speed.memory_format import use_channels_last
 
@@ -68,6 +69,8 @@ class Run:
         self._gpu = GpuUtilSampler(interval=1.0)
         self._loader_logged = False
         self._gpu_loader_fits = False    # report tip: the dataset could live on the GPU
+        self._shuffle_seed = None        # base seed of a shuffling DataLoader, saved for resume
+        self._set_epoch = None
 
         self.model = self.optimizer = self.scheduler = None
         self.scaler = _make_scaler(self.hw.precision == "fp16")
@@ -102,6 +105,7 @@ class Run:
                 for k, v in saved.items():
                     setattr(self.state, k, v)
                 self._resumed_from = (saved["epoch"], saved["batch_in_epoch"])
+                self._shuffle_seed = self.ckpt.extra.get("shuffle_seed")
                 self._log(f"[efficio] resumed from epoch {saved['epoch']}, "
                           f"batch {saved['batch_in_epoch']}, step {saved['step']}")
         return self.model, self.optimizer
@@ -130,12 +134,22 @@ class Run:
                 skip = start = self.state.batch_in_epoch
                 if hasattr(loader, "set_epoch"):
                     loader.set_epoch(epoch)
+                if self._set_epoch is not None:
+                    self._set_epoch(epoch)          # same shuffle order as before a resume
+                rng_before_skip = None
                 if skip and hasattr(loader, "set_start_batch"):
                     loader.set_start_batch(skip)    # GPULoader: jump there without loading
                 else:
                     start = 0
+                    if skip:
+                        # Loading the skipped batches may draw random augmentations; put the
+                        # RNG back afterwards so the next batch continues the saved stream.
+                        rng_before_skip = _rng_state()
                 batches = iter(loader)
                 for i in itertools.count(start):
+                    if rng_before_skip is not None and i == skip:
+                        _set_rng_state(rng_before_skip)
+                        rng_before_skip = None
                     wait_start = time.perf_counter()
                     batch = next(batches, _END)
                     if batch is _END:
@@ -159,6 +173,8 @@ class Run:
                                   time.perf_counter() - fetched)
                     if self._stop_reason:
                         return
+                if rng_before_skip is not None:            # epoch shorter than the skip
+                    _set_rng_state(rng_before_skip)
                 self.state.epoch, self.state.batch_in_epoch = epoch + 1, 0
             self._stop_reason = self._stop_reason or "finished"
             self.save()
@@ -173,15 +189,17 @@ class Run:
             return loader
         if self.hw.device == "cuda":
             self._gpu_loader_fits = fits_on_gpu(getattr(loader, "dataset", None), self.device)
-        if not self.optimize_data:
-            return loader
-        loader, changes = optimize_loader(loader, self.hw)
-        applied = [c for c in changes if not c.startswith(("unchanged", "already", "note"))]
-        if applied:
-            self._note_optimization(f"dataloader ({', '.join(applied)})")
-        if not self._loader_logged:
-            self._log(f"[efficio] dataloader: {', '.join(changes)}")
-            self._loader_logged = True
+        if self.optimize_data:
+            loader, changes = optimize_loader(loader, self.hw)
+            applied = [c for c in changes if not c.startswith(("unchanged", "already", "note"))]
+            if applied:
+                self._note_optimization(f"dataloader ({', '.join(applied)})")
+            if not self._loader_logged:
+                self._log(f"[efficio] dataloader: {', '.join(changes)}")
+                self._loader_logged = True
+        loader, self._set_epoch = seeded_shuffle(loader, self._shuffle_seed)
+        if self._set_epoch is not None:
+            self._shuffle_seed = self._set_epoch.base_seed
         return loader
 
     def _note_optimization(self, text):
@@ -206,7 +224,9 @@ class Run:
 
     # ---------- checkpointing and budget ----------
     def save(self):
-        path = self.ckpt.save(self.state, self.model, self.optimizer, self.scheduler, self.scaler)
+        extra = {"shuffle_seed": self._shuffle_seed} if self._shuffle_seed is not None else None
+        path = self.ckpt.save(self.state, self.model, self.optimizer, self.scheduler, self.scaler,
+                              extra=extra)
         self._last_save = time.time()
         self._saves += 1
         self._log(f"[efficio] checkpoint saved: {path}")
