@@ -19,12 +19,13 @@ from common import (GpuUtilSampler, evaluate, make_loaders, make_model, make_opt
 parser = argparse.ArgumentParser()
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--batch-size", type=int, default=128)
+parser.add_argument("--data-dir", default="./data", help="where CIFAR-10 is stored")
 args = parser.parse_args()
 
 torch.manual_seed(0)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-train_loader, test_loader = make_loaders(batch_size=args.batch_size)
+train_loader, test_loader = make_loaders(batch_size=args.batch_size, data_dir=args.data_dir)
 model = make_model().to(device)
 optimizer, scheduler = make_optimizer(model, args.epochs, len(train_loader))
 loss_fn = nn.CrossEntropyLoss()

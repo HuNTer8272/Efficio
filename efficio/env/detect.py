@@ -10,9 +10,17 @@ SESSION_LIMITS = {"colab": 12.0, "kaggle": 12.0, "local": 0.0}
 def detect_platform() -> str:
     if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
         return "kaggle"
-    if os.environ.get("COLAB_RELEASE_TAG") or importlib.util.find_spec("google.colab") is not None:
+    if os.environ.get("COLAB_RELEASE_TAG") or _has_module("google.colab"):
         return "colab"
     return "local"
+
+
+def _has_module(name):
+    # find_spec("google.colab") raises instead of returning None when "google" itself is missing
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def default_checkpoint_dir(platform: str) -> str:

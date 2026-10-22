@@ -1,0 +1,30 @@
+{
+  "run": "efficio",
+  "platform": "colab",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu130",
+  "timestamp": "20261021_084501",
+  "epochs": 5,
+  "epoch_times_s": [
+    21.585,
+    20.146,
+    20.124,
+    21.217,
+    21.465
+  ],
+  "avg_epoch_s_excl_first": 20.738,
+  "epochs_per_hour": 173.594,
+  "images_per_s": 2407.2,
+  "peak_mem_gb": 0.527,
+  "avg_gpu_util_pct": 54.2,
+  "test_acc_pct": 85.57,
+  "precision": "fp16",
+  "batch_size": 128,
+  "gpu_data": false,
+  "optimizations": [
+    "fp16",
+    "cudnn.benchmark",
+    "channels_last",
+    "dataloader (pin_memory on, persistent_workers on, prefetch_factor 4)"
+  ]
+}

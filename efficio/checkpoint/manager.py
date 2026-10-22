@@ -39,12 +39,14 @@ class CheckpointManager:
         self.directory = directory
         self.keep_last = keep_last
         self.mode = mode
+        self.extra = {}      # the "extra" dict of the last loaded checkpoint
         os.makedirs(directory, exist_ok=True)
 
     def _path(self, step):
         return os.path.join(self.directory, f"ckpt_step{step:09d}.pt")
 
-    def save(self, train_state, model, optimizer, scheduler=None, scaler=None):
+    def save(self, train_state, model, optimizer, scheduler=None, scaler=None, extra=None):
+        """`extra`: a small dict of other resume state (e.g. the data shuffle seed)."""
         payload = {
             "efficio_version": 1,
             "mode": self.mode,
@@ -54,6 +56,7 @@ class CheckpointManager:
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "scaler": scaler.state_dict() if scaler is not None else None,
             "rng": _rng_state(),
+            "extra": dict(extra or {}),
         }
         final = self._path(train_state.step)
         tmp = final + ".tmp"
@@ -80,6 +83,7 @@ class CheckpointManager:
         if scaler is not None and payload["scaler"] is not None:
             scaler.load_state_dict(payload["scaler"])
         _set_rng_state(payload["rng"])
+        self.extra = payload.get("extra") or {}     # older checkpoints have none
         return payload["train_state"]
 
     def _cleanup(self):

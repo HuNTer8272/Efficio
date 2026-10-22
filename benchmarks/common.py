@@ -6,7 +6,9 @@ model, data, batch size and LR schedule. This file must not import efficio.
 
 import json
 import os
+import shutil
 import subprocess
+import tarfile
 import threading
 import time
 from datetime import datetime
@@ -22,6 +24,11 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR_STD = (0.2470, 0.2435, 0.2616)
 
+KAGGLE_INPUT = Path("/kaggle/input")
+CIFAR_FOLDER = "cifar-10-batches-py"
+CIFAR_ARCHIVE = "cifar-10-python.tar.gz"
+CIFAR_FILES = ["batches.meta", "test_batch"] + [f"data_batch_{i}" for i in range(1, 6)]
+
 
 def platform_name():
     if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
@@ -31,7 +38,55 @@ def platform_name():
     return "local"
 
 
-def make_loaders(batch_size=128, num_workers=2):
+def _find_attached_cifar(root, max_depth=4):
+    """Look for an attached CIFAR-10 copy under `root` (Kaggle: /kaggle/input).
+    Returns ("folder", path), ("archive", path) or None."""
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        if here.name == CIFAR_FOLDER and all(f in filenames for f in CIFAR_FILES):
+            return "folder", here
+        if CIFAR_ARCHIVE in filenames:
+            return "archive", here / CIFAR_ARCHIVE
+        if len(here.relative_to(root).parts) >= max_depth:
+            dirnames[:] = []        # don't walk deep into large attached datasets
+    return None
+
+
+def prepare_cifar10(data_dir, search_root=KAGGLE_INPUT):
+    """Put CIFAR-10 into data_dir from the fastest source, so torchvision skips its slow
+    download (59 min on Kaggle once). Prints and returns which source was used:
+    "existing", "folder" (copied), "archive" (extracted) or "download"."""
+    data_dir = Path(data_dir)
+    target = data_dir / CIFAR_FOLDER
+    if all((target / f).exists() for f in CIFAR_FILES):
+        print(f"CIFAR-10 source: existing copy in {target}")
+        return "existing"
+    found = _find_attached_cifar(search_root)
+    if found is None:
+        print(f"CIFAR-10 source: no copy in {data_dir} or {search_root}, downloading with "
+              "torchvision (on Kaggle, attach a CIFAR-10 dataset to skip this)")
+        return "download"
+    kind, path = found
+    start = time.perf_counter()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    if kind == "folder":
+        shutil.copytree(path, target, dirs_exist_ok=True)
+        print(f"CIFAR-10 source: copied attached folder {path} to {target}", end="")
+    else:
+        with tarfile.open(path) as tar:
+            try:
+                tar.extractall(data_dir, filter="data")
+            except TypeError:       # Python without extraction filters
+                tar.extractall(data_dir)
+        print(f"CIFAR-10 source: extracted attached archive {path} to {data_dir}", end="")
+    print(f" ({time.perf_counter() - start:.1f} s)")
+    return kind
+
+
+def make_loaders(batch_size=128, num_workers=2, data_dir="./data"):
     train_tf = T.Compose([
         T.RandomCrop(32, padding=4),
         T.RandomHorizontalFlip(),
@@ -39,8 +94,9 @@ def make_loaders(batch_size=128, num_workers=2):
         T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD),
     ])
     test_tf = T.Compose([T.ToTensor(), T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD)])
-    train_set = torchvision.datasets.CIFAR10("./data", train=True, download=True, transform=train_tf)
-    test_set = torchvision.datasets.CIFAR10("./data", train=False, download=True, transform=test_tf)
+    prepare_cifar10(data_dir)
+    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=True, transform=train_tf)
+    test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=True, transform=test_tf)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True,
                                                drop_last=True, num_workers=num_workers)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=256, shuffle=False,

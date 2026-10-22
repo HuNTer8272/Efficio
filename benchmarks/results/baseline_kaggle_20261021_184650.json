@@ -1,0 +1,23 @@
+{
+  "run": "baseline",
+  "platform": "kaggle",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu128",
+  "timestamp": "20261021_184650",
+  "epochs": 5,
+  "epoch_times_s": [
+    39.67,
+    41.52,
+    47.515,
+    44.182,
+    46.0
+  ],
+  "avg_epoch_s_excl_first": 44.804,
+  "epochs_per_hour": 80.349,
+  "images_per_s": 1114.2,
+  "peak_mem_gb": 0.769,
+  "avg_gpu_util_pct": 98.3,
+  "test_acc_pct": 85.98,
+  "precision": "fp32",
+  "batch_size": 128
+}
