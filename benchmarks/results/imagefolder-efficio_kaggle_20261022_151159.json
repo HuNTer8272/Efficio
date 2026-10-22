@@ -1,0 +1,70 @@
+{
+  "run": "imagefolder-efficio",
+  "platform": "kaggle",
+  "gpu": "Tesla T4",
+  "torch_version": "2.11.0+cu128",
+  "timestamp": "20261022_151159",
+  "epochs": 4,
+  "epoch_times_s": [
+    10.117,
+    5.052,
+    5.089,
+    5.252
+  ],
+  "avg_epoch_s_excl_first": 5.131,
+  "epochs_per_hour": 701.577,
+  "images_per_s": 873.1,
+  "peak_mem_gb": 2.107,
+  "avg_gpu_util_pct": 77.4,
+  "test_acc_pct": 94.99,
+  "benchmark": "image-folder",
+  "precision": "fp16",
+  "batch_size": 64,
+  "image_size": 224,
+  "train_images": 4500,
+  "fake_data": false,
+  "data_wait_pct": 0.3,
+  "val_auroc": 0.6445,
+  "cache_build_s": 0.0,
+  "cache_build_stats": null,
+  "epochs_all_s": [
+    [
+      1,
+      10.117,
+      true
+    ],
+    [
+      2,
+      5.052,
+      true
+    ],
+    [
+      3,
+      5.089,
+      true
+    ],
+    [
+      4,
+      5.252,
+      true
+    ]
+  ],
+  "resume": {
+    "tested": false,
+    "stopped_at_epoch_batch_step": [
+      4,
+      0,
+      280
+    ],
+    "resumed_from": [],
+    "final_step": 280,
+    "expected_step": 280,
+    "ok": true
+  },
+  "optimizations": [
+    "fp16",
+    "cudnn.benchmark",
+    "channels_last",
+    "dataloader (pin_memory on, persistent_workers on, prefetch_factor 4)"
+  ]
+}

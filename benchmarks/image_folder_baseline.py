@@ -39,6 +39,8 @@ class ImageFiles(Dataset):
 def main():
     parser = argparse.ArgumentParser()
     ic.add_args(parser)
+    parser.add_argument("--workers", type=int, default=ic.NUM_WORKERS,
+                        help="DataLoader workers (default 2, as in the earlier results)")
     args = parser.parse_args()
     s = args.size
 
@@ -60,9 +62,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader = DataLoader(ImageFiles(train_paths, train_labels, train_tf),
                               batch_size=args.batch_size, shuffle=True, drop_last=True,
-                              num_workers=ic.NUM_WORKERS)
+                              num_workers=args.workers)
     val_loader = DataLoader(ImageFiles(val_paths, val_labels, val_tf),
-                            batch_size=2 * args.batch_size, num_workers=ic.NUM_WORKERS)
+                            batch_size=2 * args.batch_size, num_workers=args.workers)
     model = ic.make_model(train_labels.shape[1], args.pretrained).to(device)
     optimizer = ic.make_optimizer(model)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -98,11 +100,14 @@ def main():
             scores.append(torch.sigmoid(model(x.to(device))).cpu())
             targets.append(y)
     scores, targets = torch.cat(scores), torch.cat(targets)
-    save_results("imagefolder-baseline", epoch_times,
+    name = "imagefolder-baseline" + ("" if args.workers == ic.NUM_WORKERS
+                                     else f"-{args.workers}workers")
+    save_results(name, epoch_times,
                  len(train_loader) * args.batch_size, sampler.average,
                  ic.label_accuracy(scores, targets),
                  extra={"benchmark": ic.BENCHMARK, "precision": "fp32",
                         "batch_size": args.batch_size, "image_size": s,
+                        "num_workers": args.workers,
                         "train_images": len(train_paths), "fake_data": args.fake,
                         "data_wait_pct": round(100 * wait_s / train_s, 1),
                         "val_auroc": round(ic.mean_auroc(scores, targets), 4),
