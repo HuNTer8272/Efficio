@@ -145,7 +145,11 @@ for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)
     ...
 ```
 
-`labels` can be class ids (one per image) or a multi-hot array (one 0/1 column per label). The cache size is printed when the build finishes. Keep the cache for later sessions: on Colab copy the finished folder to Google Drive, on Kaggle save it as notebook output or a private dataset. Efficio never uploads anything by itself. `examples/large_image_dataset.py` shows the whole flow (image folder + CSV, pretrained model, multi-label loss, clipping, validation, budget and resume); run it with `--fake` to try it on CPU.
+`labels` can be class ids (one per image) or a multi-hot array (one 0/1 column per label). The cache size is printed when the build finishes.
+
+Reading and decoding overlap: `io_threads` threads (default 32) read file bytes ahead while worker processes decode them, with at most `4 x io_threads` files held in memory. This matters on network-backed storage such as Kaggle's `/kaggle/input`, where each file read has high latency: reading one file at a time measured 2.5 files/s on NIH Chest X-rays, against 71.5 files/s with 32 parallel reads. The progress line shows the overall images/s plus read files/s and decode capacity; if reads stay far below decoding, it suggests a higher `io_threads` (for example 64).
+
+Building the cache doesn't need a GPU. To save GPU quota, build it once in a CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: Google Drive), then train in a GPU session. Efficio prints this note when it builds a cache on Colab or Kaggle with a GPU attached. Keep the cache for later sessions: on Colab copy the finished folder to Google Drive, on Kaggle save it as notebook output or a private dataset. Efficio never uploads anything by itself. `examples/large_image_dataset.py` shows the whole flow (image folder + CSV, pretrained model, multi-label loss, clipping, validation, budget and resume); run it with `--fake` to try it on CPU.
 
 ### Try the example
 

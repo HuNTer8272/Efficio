@@ -2,6 +2,8 @@
 
 import json
 import os
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -63,16 +65,16 @@ def test_multi_label_grayscale(tmp_path):
 
 def test_interrupted_build_resumes_without_redoing_chunks(tmp_path, monkeypatch):
     paths = _pngs(tmp_path / "img", 10)
-    real = ic._load_chunk
+    real = ic._decode_group
     calls = []
 
-    def flaky(chunk, size, grayscale):
+    def flaky(blobs, names, size, grayscale):
         if len(calls) == 2:
             raise KeyboardInterrupt          # like a dropped session after two chunks
-        calls.append(chunk[0])
-        return real(chunk, size, grayscale)
+        calls.append(names[0])
+        return real(blobs, names, size, grayscale)
 
-    monkeypatch.setattr(ic, "_load_chunk", flaky)
+    monkeypatch.setattr(ic, "_decode_group", flaky)
     with pytest.raises(KeyboardInterrupt):
         ImageCache.build(paths, list(range(10)), tmp_path / "cache", size=8, workers=0,
                          chunk_size=3, verbose=False)
@@ -81,7 +83,7 @@ def test_interrupted_build_resumes_without_redoing_chunks(tmp_path, monkeypatch)
         CachedImageDataset(tmp_path / "cache")          # not finished yet
 
     calls.clear()
-    monkeypatch.setattr(ic, "_load_chunk", lambda *a: calls.append(a[0][0]) or real(*a))
+    monkeypatch.setattr(ic, "_decode_group", lambda *a: calls.append(a[1][0]) or real(*a))
     ImageCache.build(paths, list(range(10)), tmp_path / "cache", size=8, workers=0,
                      chunk_size=3, verbose=False)
     assert calls == [str(paths[6]), str(paths[9])]      # only chunks 2 and 3 were decoded
@@ -96,8 +98,8 @@ def test_finished_cache_returns_immediately(tmp_path, monkeypatch, capsys):
     paths = _pngs(tmp_path / "img", 5)
     ImageCache.build(paths, [0] * 5, tmp_path / "cache", size=8, workers=0, verbose=False)
     calls = []
-    real = ic._load_chunk
-    monkeypatch.setattr(ic, "_load_chunk", lambda *a: calls.append(1) or real(*a))
+    real = ic._decode_group
+    monkeypatch.setattr(ic, "_decode_group", lambda *a: calls.append(1) or real(*a))
     ImageCache.build(paths, [0] * 5, tmp_path / "cache", size=8, workers=0)
     assert calls == [] and "using the finished cache" in capsys.readouterr().out
     # Different settings: rebuilt
@@ -125,3 +127,82 @@ def test_bad_inputs(tmp_path):
     with pytest.raises(RuntimeError, match="could not read image"):
         ImageCache.build([tmp_path / "missing.png"], [0], tmp_path / "c", size=4, workers=0,
                          verbose=False)
+
+
+# ---------- parallel reads ----------
+
+def test_io_threads_and_workers_give_identical_caches(tmp_path):
+    paths = _pngs(tmp_path / "img", 23)
+    builds = {}
+    for name, kw in {"t1": dict(io_threads=1, workers=0), "t8": dict(io_threads=8, workers=0),
+                     "t8_pool": dict(io_threads=8, workers=2)}.items():
+        cache = ImageCache.build(paths, list(range(23)), tmp_path / name, size=(10, 14),
+                                 chunk_size=5, verbose=False, **kw)
+        builds[name] = np.load(os.path.join(cache.out_dir, "images.npy"))
+        assert cache.build_stats["images"] == 23
+    assert np.array_equal(builds["t1"], builds["t8"])
+    assert np.array_equal(builds["t1"], builds["t8_pool"])
+    # And identical to decoding straight from the file paths, as before the change
+    for i in (0, 11, 22):
+        assert np.array_equal(builds["t1"][i], _expected(paths[i], (10, 14), False))
+
+
+def test_in_flight_limit(tmp_path, monkeypatch):
+    paths = _pngs(tmp_path / "img", 40)
+    lock, counts, worst = threading.Lock(), {"read": 0, "decoded": 0}, []
+    real_read, real_decode = ic._read_file, ic._decode_group
+
+    def slow_read(path):
+        with lock:
+            counts["read"] += 1
+            worst.append(counts["read"] - counts["decoded"])
+        time.sleep(0.002)
+        return real_read(path)
+
+    def counting_decode(blobs, names, size, grayscale):
+        out = real_decode(blobs, names, size, grayscale)
+        with lock:
+            counts["decoded"] += len(blobs)
+        return out
+
+    monkeypatch.setattr(ic, "_read_file", slow_read)
+    monkeypatch.setattr(ic, "_decode_group", counting_decode)
+    cache = ImageCache.build(paths, [0] * 40, tmp_path / "cache", size=8, workers=0,
+                             io_threads=2, chunk_size=16, verbose=False)
+    limit = 4 * 2
+    assert max(worst) <= limit                              # never more files held than allowed
+    assert cache.build_stats["max_in_flight"] == limit     # and it does read ahead up to it
+    assert counts == {"read": 40, "decoded": 40}
+
+
+def test_storage_bottleneck_tip(capsys):
+    progress = ic._Progress(1000, True, io_threads=32, decode_workers=4)
+    progress.start = time.time() - 20                      # 20 s in
+    progress.read(100)                                     # 5 files/s read
+    progress.decoded(100, 1.0)                             # decoding could do 400 img/s
+    out = capsys.readouterr().out
+    assert "read 5 files/s, decode up to 400 img/s" in out
+    assert "storage is the bottleneck" in out and "io_threads=64" in out
+    progress.decoded(10, 0.1)
+    assert "storage is the bottleneck" not in capsys.readouterr().out   # only once
+
+    fast = ic._Progress(1000, True, io_threads=32, decode_workers=4)
+    fast.start = time.time() - 20
+    fast.read(4000)                                        # 200 files/s read
+    fast.decoded(4000, 80.0)                               # decoding could do 200 img/s
+    assert "storage is the bottleneck" not in capsys.readouterr().out
+
+
+# ---------- GPU quota note ----------
+
+@pytest.mark.parametrize("platform,cuda,shown", [("kaggle", True, True), ("colab", True, True),
+                                                 ("local", True, False), ("kaggle", False, False)])
+def test_gpu_note(tmp_path, monkeypatch, capsys, platform, cuda, shown):
+    monkeypatch.setattr(ic, "detect_platform", lambda: platform)
+    monkeypatch.setattr(ic, "_cuda_available", lambda: cuda)
+    monkeypatch.setattr(ic, "_gpu_note_shown", False)
+    paths = _pngs(tmp_path / "img", 3)
+    ImageCache.build(paths, [0] * 3, tmp_path / "a", size=4, workers=0)
+    ImageCache.build(paths, [0] * 3, tmp_path / "b", size=4, workers=0)   # a second build
+    out = capsys.readouterr().out
+    assert out.count("doesn't need a GPU") == (1 if shown else 0)        # at most once

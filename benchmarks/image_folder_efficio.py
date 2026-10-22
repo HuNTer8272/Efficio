@@ -63,6 +63,8 @@ def train_phase(run, model, optimizer, loader, epochs, augment, loss_fn, stop_mi
 def main():
     parser = argparse.ArgumentParser()
     ic.add_args(parser)
+    parser.add_argument("--io-threads", type=int, default=32,
+                        help="parallel file reads while building the cache")
     parser.add_argument("--no-resume-test", action="store_true",
                         help="train straight through without the budget stop and resume")
     args = parser.parse_args()
@@ -72,10 +74,10 @@ def main():
     # Decode and resize once. A finished cache with the same settings is reused (0 s).
     cache_dir = os.path.join(args.data_dir, f"cache_{s}" + ("_fake" if args.fake else ""))
     start = time.perf_counter()
-    ImageCache.build(train_paths, train_labels, os.path.join(cache_dir, "train"),
-                     size=(s, s), grayscale=True)
+    train_cache = ImageCache.build(train_paths, train_labels, os.path.join(cache_dir, "train"),
+                                   size=(s, s), grayscale=True, io_threads=args.io_threads)
     ImageCache.build(val_paths, val_labels, os.path.join(cache_dir, "val"),
-                     size=(s, s), grayscale=True)
+                     size=(s, s), grayscale=True, io_threads=args.io_threads)
     cache_build_s = time.perf_counter() - start
 
     to_model = [A.ToFloat(), A.RepeatChannels(3)]
@@ -147,6 +149,7 @@ def main():
                         "data_wait_pct": round(100 * data_wait_s / train_s, 1) if train_s else 0.0,
                         "val_auroc": round(ic.mean_auroc(scores, targets), 4),
                         "cache_build_s": round(cache_build_s, 1),
+                        "cache_build_stats": train_cache.build_stats,   # None when reused
                         "epochs_all_s": [[e + 1, round(t, 3), ok] for e, t, ok in times],
                         "resume": resume, "optimizations": run.optimizations})
 

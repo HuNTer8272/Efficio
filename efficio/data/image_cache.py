@@ -13,15 +13,24 @@ The build is resumable: it writes the array in chunks and records finished chunk
 interrupted build (quota, disconnect) continues where it stopped. Images are resized to
 `size` exactly (no aspect-preserving crop).
 
+Reading and decoding overlap: a thread pool (io_threads) reads file bytes ahead while worker
+processes decode. On network-backed storage such as Kaggle's /kaggle/input each file read has
+high latency, so many reads in parallel are much faster than one after another.
+
+Building the cache needs no GPU, so on Colab/Kaggle it can be done in a CPU-only session.
+
 This module does not import torch at import time, so TensorFlow/Keras support can reuse
 the cache builder.
 """
 
 import hashlib
+import io
 import json
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
+from collections import deque
+from concurrent.futures import (FIRST_COMPLETED, Future, ProcessPoolExecutor,
+                                ThreadPoolExecutor, wait)
 
 import numpy as np
 
@@ -30,22 +39,56 @@ from ..env.detect import detect_platform
 FORMAT_VERSION = 1
 IMAGES_FILE, LABELS_FILE, META_FILE, PROGRESS_FILE = (
     "images.npy", "labels.npy", "meta.json", "progress.json")
+DECODE_GROUP = 16            # images per decode task
+READ_TIP_RATIO = 0.5         # reads below this share of decode capacity: storage is the limit
+GPU_NOTE = ("Building the cache doesn't need a GPU. To save GPU quota, build it once in a "
+            "CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: "
+            "Google Drive), then train in a GPU session.")
+_gpu_note_shown = False
 
 
-def _load_chunk(paths, size, grayscale):
-    """Decode and resize a list of images. Runs in a worker process. Returns (n, H, W, C) uint8."""
+def _read_file(path):
+    """Read one file's bytes. Runs in an I/O thread."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise RuntimeError(f"ImageCache: could not read image {path}: {e}") from e
+
+
+def _decode_group(blobs, names, size, grayscale):
+    """Decode and resize images from their file bytes. Runs in a worker process.
+    Returns ((n, H, W, C) uint8 array, seconds spent)."""
     from PIL import Image
+    start = time.perf_counter()
     h, w = size
-    out = np.empty((len(paths), h, w, 1 if grayscale else 3), dtype=np.uint8)
-    for i, path in enumerate(paths):
+    out = np.empty((len(blobs), h, w, 1 if grayscale else 3), dtype=np.uint8)
+    for i, (blob, name) in enumerate(zip(blobs, names)):
         try:
-            with Image.open(path) as img:
+            with Image.open(io.BytesIO(blob)) as img:
                 img = img.convert("L" if grayscale else "RGB")
                 img = img.resize((w, h), Image.BILINEAR)
                 out[i] = np.asarray(img, dtype=np.uint8).reshape(h, w, -1)
         except Exception as e:
-            raise RuntimeError(f"ImageCache: could not read image {path}: {e}") from e
-    return out
+            raise RuntimeError(f"ImageCache: could not read image {name}: {e}") from e
+    return out, time.perf_counter() - start
+
+
+def _cuda_available():
+    try:
+        import torch
+    except ImportError:
+        return False
+    return torch.cuda.is_available()
+
+
+def _gpu_note():
+    """The GPU quota note, once per process, when building on Colab/Kaggle with a GPU."""
+    global _gpu_note_shown
+    if _gpu_note_shown or detect_platform() not in ("colab", "kaggle") or not _cuda_available():
+        return None
+    _gpu_note_shown = True
+    return GPU_NOTE
 
 
 def _paths_hash(paths):
@@ -91,6 +134,7 @@ class ImageCache:
 
     def __init__(self, out_dir):
         self.out_dir = str(out_dir)
+        self.build_stats = None
         self.meta = _read_json(os.path.join(self.out_dir, META_FILE))
         if not self.meta or not self.meta.get("complete"):
             raise FileNotFoundError(f"No finished image cache in {self.out_dir}. "
@@ -106,13 +150,16 @@ class ImageCache:
 
     @classmethod
     def build(cls, paths, labels, out_dir, size=(224, 224), grayscale=False, workers=None,
-              chunk_size=256, verbose=True):
+              io_threads=32, chunk_size=256, verbose=True):
         """Decode and resize every image in `paths` once into `out_dir`.
 
         labels: N ints (single label) or an (N, K) array of 0/1 floats (multi-label).
         workers: processes for decoding (default: all CPU cores; 0 or 1 = no pool). With
             workers > 1 on Windows/macOS, call this under `if __name__ == "__main__":`.
+        io_threads: threads reading files ahead of decoding. Raise it (e.g. 64) when the
+            progress line shows reads far below decoding (slow network storage).
         Returns immediately if a finished cache with the same settings and paths exists.
+        The returned cache has `build_stats` (rates, None when nothing was built).
         """
         paths = [str(p) for p in paths]
         labels = np.asarray(labels)
@@ -161,47 +208,87 @@ class ImageCache:
             _write_json(meta_path, {**meta, "complete": False})
 
         todo = [c for c in range(n_chunks) if c not in done]
+        if workers is None:
+            workers = os.cpu_count() or 1
+        io_threads = max(1, int(io_threads))
         if verbose:
+            note = _gpu_note()
+            if note:
+                print(f"[efficio] note: {note}")
             resumed = f", resuming ({len(done)}/{n_chunks} chunks already done)" if done else ""
             print(f"[efficio] image cache: decoding {len(paths)} images to {h}x{w}x{channels} "
                   f"in {out_dir}{resumed}")
 
-        def chunk_paths(c):
-            return paths[c * chunk_size:(c + 1) * chunk_size]
+        # Work in small groups of images inside each unfinished chunk
+        limit = 4 * io_threads              # files read but not yet written: bounds memory
+        group = min(DECODE_GROUP, limit)
+        groups, left_in_chunk = deque(), {}
+        for c in todo:
+            first, end = c * chunk_size, min((c + 1) * chunk_size, len(paths))
+            left_in_chunk[c] = end - first
+            groups.extend(list(range(i, min(i + group, end))) for i in range(first, end, group))
 
-        def finish_chunk(c, arr):
-            images[c * chunk_size:c * chunk_size + len(arr)] = arr
+        def finish_chunk(c):
             images.flush()                                   # data on disk before it counts
             done.add(c)
             _write_json(progress_path, {"done": sorted(done)})
 
-        progress = _Progress(sum(len(chunk_paths(c)) for c in todo), verbose)
-        if workers is None:
-            workers = os.cpu_count() or 1
-        if workers <= 1:
-            for c in todo:
-                finish_chunk(c, _load_chunk(chunk_paths(c), (h, w), grayscale))
-                progress.add(len(chunk_paths(c)))
-        else:
-            pool = ProcessPoolExecutor(max_workers=workers)
-            try:
-                pending = {}
-                queue = list(todo)
-                while queue or pending:
-                    while queue and len(pending) < 2 * workers:   # bound memory in flight
-                        c = queue.pop(0)
-                        pending[pool.submit(_load_chunk, chunk_paths(c), (h, w), grayscale)] = c
-                    future = next(iter(pending))                  # finish in submission order
-                    c = pending.pop(future)
-                    finish_chunk(c, future.result())
-                    progress.add(len(chunk_paths(c)))
-            finally:
-                # On an interrupt, drop queued chunks instead of finishing them first
-                pool.shutdown(wait=True, cancel_futures=True)
+        progress = _Progress(sum(left_in_chunk.values()), verbose, io_threads,
+                             workers if workers > 1 else 1)
+        readers = ThreadPoolExecutor(max_workers=io_threads)
+        decoders = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
+        try:
+            reading, decoding, in_flight = deque(), deque(), 0
+            while groups or reading or decoding:
+                # 1. Read ahead, as long as the in-flight limit allows
+                while groups and in_flight + len(groups[0]) <= limit:
+                    g = groups.popleft()
+                    reading.append((g, [readers.submit(_read_file, paths[i]) for i in g]))
+                    in_flight += len(g)
+                    progress.max_in_flight = max(progress.max_in_flight, in_flight)
+                moved = False
+                # 2. Groups whose files are all read go to the decoders (in order)
+                while reading and all(f.done() for f in reading[0][1]):
+                    g, futures = reading.popleft()
+                    blobs = [f.result() for f in futures]        # raises read errors
+                    progress.read(len(g))
+                    args = (blobs, [paths[i] for i in g], (h, w), grayscale)
+                    if decoders is None:
+                        future = Future()
+                        future.set_result(_decode_group(*args))
+                    else:
+                        future = decoders.submit(_decode_group, *args)
+                    decoding.append((g, future))
+                    moved = True
+                    if decoders is None:
+                        break           # write it before decoding more: nothing waits unsaved
+                # 3. Write decoded groups (in order); a chunk counts once all of it is on disk
+                while decoding and decoding[0][1].done():
+                    g, future = decoding.popleft()
+                    arr, seconds = future.result()
+                    images[g[0]:g[-1] + 1] = arr
+                    in_flight -= len(g)
+                    c = g[0] // chunk_size
+                    left_in_chunk[c] -= len(g)
+                    if left_in_chunk[c] == 0:
+                        finish_chunk(c)
+                    progress.decoded(len(g), seconds)
+                    moved = True
+                if not moved:
+                    pending = [f for f in reading[0][1] if not f.done()] if reading else []
+                    if decoding:
+                        pending.append(decoding[0][1])
+                    wait(pending, return_when=FIRST_COMPLETED)
+        finally:
+            # On an interrupt, drop queued work instead of finishing it first
+            readers.shutdown(wait=True, cancel_futures=True)
+            if decoders is not None:
+                decoders.shutdown(wait=True, cancel_futures=True)
         progress.close()
         del images
         _write_json(meta_path, {**meta, "complete": True})
         cache = cls(out_dir)
+        cache.build_stats = progress.stats()
         if verbose:
             print(f"[efficio] image cache: done, {_size(cache.size_on_disk)} on disk in "
                   f"{out_dir}. {_storage_tip(out_dir)}")
@@ -209,21 +296,50 @@ class ImageCache:
 
 
 class _Progress:
-    """One progress line with images per second and the estimated time left."""
+    """One progress line: overall images/s, file reads/s, decode capacity and time left.
+    Prints a one-time tip when reading files is the bottleneck."""
 
-    def __init__(self, total, verbose):
+    def __init__(self, total, verbose, io_threads, decode_workers):
         self.total, self.verbose = total, verbose
-        self.done, self.start, self.last = 0, time.time(), 0.0
+        self.io_threads, self.decode_workers = io_threads, decode_workers
+        self.done = self.files_read = 0
+        self.decode_s, self.max_in_flight = 0.0, 0
+        self.start, self.last, self.tip_shown = time.time(), 0.0, False
 
-    def add(self, n):
+    def read(self, n):
+        self.files_read += n
+
+    def _rates(self):
+        elapsed = max(time.time() - self.start, 1e-9)
+        # Decode capacity: images per second of decode work, times the parallel workers
+        capacity = self.done / self.decode_s * self.decode_workers if self.decode_s else 0.0
+        return elapsed, self.done / elapsed, self.files_read / elapsed, capacity
+
+    def decoded(self, n, seconds):
         self.done += n
+        self.decode_s += seconds
         now = time.time()
-        if self.verbose and (now - self.last >= 1.0 or self.done == self.total):
-            self.last = now
-            rate = self.done / max(now - self.start, 1e-9)
-            left = (self.total - self.done) / rate if rate > 0 else 0
-            print(f"\r[efficio] image cache: {self.done}/{self.total} images, "
-                  f"{rate:.0f} img/s, ~{left / 60:.1f} min left   ", end="", flush=True)
+        if not self.verbose or (now - self.last < 1.0 and self.done < self.total):
+            return
+        self.last = now
+        elapsed, rate, reads, capacity = self._rates()
+        left = (self.total - self.done) / rate if rate > 0 else 0
+        print(f"\r[efficio] image cache: {self.done}/{self.total} images, {rate:.0f} img/s "
+              f"(read {reads:.0f} files/s, decode up to {capacity:.0f} img/s), "
+              f"~{left / 60:.1f} min left   ", end="", flush=True)
+        if (not self.tip_shown and elapsed >= 10 and self.done >= 50
+                and reads < READ_TIP_RATIO * capacity):
+            self.tip_shown = True
+            print(f"\n[efficio] image cache: reading files ({reads:.0f}/s) is much slower than "
+                  f"decoding ({capacity:.0f}/s), so storage is the bottleneck. Try a higher "
+                  f"io_threads, e.g. ImageCache.build(..., io_threads={2 * self.io_threads}).")
+
+    def stats(self):
+        elapsed, rate, reads, capacity = self._rates()
+        return {"seconds": round(elapsed, 2), "images": self.done,
+                "images_per_s": round(rate, 1), "read_files_per_s": round(reads, 1),
+                "decode_capacity_per_s": round(capacity, 1), "io_threads": self.io_threads,
+                "decode_workers": self.decode_workers, "max_in_flight": self.max_in_flight}
 
     def close(self):
         if self.verbose and self.total:
