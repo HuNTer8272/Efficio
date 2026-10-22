@@ -143,14 +143,19 @@ def test_tips():
     assert any("waiting for data" in t for t in tips(25.0, 60.0, 1.0))
     assert not any("batch size" in t for t in tips(25.0, 60.0, 1.0))
     assert any("batch size" in t for t in tips(2.0, 60.0, 1.0))
-    assert any("data cache" in t for t in tips(2.0, 95.0, 30.0))
+    assert any("ImageCache" in t for t in tips(2.0, 95.0, 30.0))
     assert tips(2.0, 95.0, 1.0) == []
     assert not any("GPULoader" in t for t in tips(25.0, 60.0, 1.0))
     assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True))
     assert not any("GPULoader" in t for t in tips(5.0, 60.0, 1.0, gpu_loader_fits=True))
     assert tips(2.0, None, 1.0) == []     # no GPU numbers: no utilization tip
     assert tips(25.0, 60.0, 1.0, on_gpu=False) == []   # CPU run: no GPU tips
-    assert any("data cache" in t for t in tips(25.0, None, 30.0, on_gpu=False))
+    assert any("ImageCache" in t for t in tips(25.0, None, 30.0, on_gpu=False))
+    # Image files decoded every epoch: suggest ImageCache, but GPULoader wins when it fits
+    assert any("ImageCache.build" in t for t in tips(25.0, 60.0, 1.0, image_files=True))
+    assert not any("ImageCache.build" in t
+                   for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, image_files=True))
+    assert not any("ImageCache.build" in t for t in tips(5.0, 95.0, 1.0, image_files=True))
 
 
 # ---------- resume (quickstart-style) ----------

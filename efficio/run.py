@@ -7,6 +7,7 @@ Usage:
         with run.autocast():
             loss = compute_loss(model, batch)
         run.backward(loss)
+        run.clip_grad_norm(1.0)      # optional, works with fp16 and gradient accumulation
         run.step()
     run.report()
 """
@@ -20,6 +21,7 @@ import torch
 
 from .checkpoint import CheckpointManager
 from .checkpoint.manager import _rng_state, _set_rng_state
+from .data.image_cache import CachedImageDataset
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
 from .report.profiler import GpuUtilSampler, Profiler, tips
@@ -40,6 +42,18 @@ def _move(obj, device, channels_last=False):
     if isinstance(obj, (list, tuple)):
         return type(obj)(_move(v, device, channels_last) for v in obj)
     return obj
+
+
+def _decodes_image_files(dataset):
+    """True for datasets that read and decode image files on every access, such as
+    torchvision ImageFolder or a custom dataset with a list of image paths (report tip)."""
+    while isinstance(dataset, torch.utils.data.Subset):
+        dataset = dataset.dataset
+    if dataset is None or isinstance(dataset, CachedImageDataset):
+        return False
+    if any(hasattr(dataset, a) for a in ("samples", "imgs", "image_paths", "img_paths")):
+        return True
+    return "image" in type(dataset).__name__.lower()
 
 
 def _make_scaler(enabled):
@@ -69,6 +83,7 @@ class Run:
         self._gpu = GpuUtilSampler(interval=1.0)
         self._loader_logged = False
         self._gpu_loader_fits = False    # report tip: the dataset could live on the GPU
+        self._image_files = False        # report tip: images decoded from files every epoch
         self._shuffle_seed = None        # base seed of a shuffling DataLoader, saved for resume
         self._set_epoch = None
 
@@ -119,10 +134,26 @@ class Run:
         with torch.autocast(device_type="cuda", dtype=dtype):
             yield
 
+    @contextlib.contextmanager
+    def evaluate_mode(self):
+        """For validation: model.eval(), no gradients and the run's mixed precision. The
+        model's previous train/eval mode is restored afterwards."""
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            with torch.no_grad(), self.autocast():
+                yield
+        finally:
+            self.model.train(was_training)
+
     # ---------- training loop ----------
-    def loop(self, loader, epochs):
+    def loop(self, loader, epochs, gpu_transform=None):
         """Yields batches already on the right device. Skips work done before a resume
-        and stops cleanly (with a checkpoint) when the time budget runs low."""
+        and stops cleanly (with a checkpoint) when the time budget runs low.
+
+        gpu_transform: optional function applied to each batch after it is on the device
+        (without gradients), e.g. efficio.on_inputs(augment) for GPU augmentation. Its
+        randomness comes from the global torch RNG, which checkpoints save."""
         loader = self._prepare_loader(loader)
         prof = self.profiler
         if self._stop_reason == "finished":     # an earlier loop() ended normally; train again
@@ -168,7 +199,13 @@ class Run:
                         # (forking with a running thread can deadlock) and setup is excluded
                         if self.hw.device == "cuda":
                             self._gpu.start()
-                    yield _move(batch, self.device, self.channels_last)
+                    batch = _move(batch, self.device, self.channels_last and not gpu_transform)
+                    if gpu_transform is not None:
+                        with torch.no_grad():
+                            batch = gpu_transform(batch)
+                        if self.channels_last:      # the transform makes new float images
+                            batch = _move(batch, self.device, True)
+                    yield batch
                     prof.add_step(0.0 if first else fetched - wait_start,
                                   time.perf_counter() - fetched)
                     if self._stop_reason:
@@ -189,6 +226,7 @@ class Run:
             return loader
         if self.hw.device == "cuda":
             self._gpu_loader_fits = fits_on_gpu(getattr(loader, "dataset", None), self.device)
+        self._image_files = _decodes_image_files(getattr(loader, "dataset", None))
         if self.optimize_data:
             loader, changes = optimize_loader(loader, self.hw)
             applied = [c for c in changes if not c.startswith(("unchanged", "already", "note"))]
@@ -208,6 +246,17 @@ class Run:
 
     def backward(self, loss):
         self.scaler.scale(loss / self.state.grad_accum_steps).backward()
+
+    def clip_grad_norm(self, max_norm, norm_type=2.0):
+        """Clip the gradient norm of the optimizer's parameters. Call it between backward()
+        and step(). With fp16 the gradients are unscaled first, so max_norm is in real units.
+        With gradient accumulation it only acts on the micro-batch where step() will update
+        the weights. Returns the total norm before clipping, or None when it did nothing."""
+        if self._micro + 1 < self.state.grad_accum_steps:
+            return None                 # gradients are still accumulating
+        self.scaler.unscale_(self.optimizer)        # no-op when the scaler is disabled
+        params = [p for group in self.optimizer.param_groups for p in group["params"]]
+        return torch.nn.utils.clip_grad_norm_(params, max_norm, norm_type)
 
     def step(self):
         self._micro += 1
@@ -293,7 +342,8 @@ class Run:
         lines.append(f"  optimizations   : {', '.join(self.optimizations)}")
         advice = tips(prof.data_wait_pct, util, prof.setup_pct,
                       on_gpu=self.hw.device == "cuda",
-                      gpu_loader_fits=self._gpu_loader_fits) if prof.steps else []
+                      gpu_loader_fits=self._gpu_loader_fits,
+                      image_files=self._image_files) if prof.steps else []
         if advice:
             lines.append("  tips:")
             lines += ["    - " + t.replace("\n", "\n        ") for t in advice]

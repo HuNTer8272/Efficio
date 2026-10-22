@@ -189,3 +189,47 @@ efficio/speed/dataloader.py, efficio/checkpoint/manager.py, efficio/run.py, test
 **Open questions**
 - Random augmentation inside DataLoader workers (num_workers > 0) is still not reproduced exactly after a resume: persistent workers keep their own RNG across epochs. The order is exact; only worker-side augmentation differs. GPU augmentation (GPULoader, or gpu_transform on the next branch) uses the global RNG and is exact.
 - CLAUDE.md's roadmap still lists the data cache under Phase 3; the README now lists it under Phase 2.
+
+## 2026-10-22 (large image datasets, branch feat/large-image-support)
+
+**What changed**
+- `efficio/data/image_cache.py` (new; no torch import at module level, so TensorFlow/Keras support can reuse it):
+  - `ImageCache.build(paths, labels, out_dir, size, grayscale, workers)` decodes and resizes every image once with a process pool into one uint8 array file (`images.npy`, N x H x W x C), plus `labels.npy` (int class ids, or a float multi-hot array) and `meta.json` (size, count, channels, label shape, SHA-1 of the path list).
+  - The build is resumable: each chunk is flushed to disk before it is recorded as done in `progress.json` (atomic write), so a rerun continues with the missing chunks. A finished cache with matching metadata returns immediately; changed settings or paths trigger a rebuild.
+  - The progress line shows images/s and the time left. The cache size is printed when finished, with a storage tip per platform (Drive on Colab, output or private dataset on Kaggle). Nothing is uploaded.
+  - `CachedImageDataset` returns (uint8 C x H x W tensor, label) from the memory-mapped file. The arrays are opened lazily in each process, so DataLoader workers don't copy them, and each sample is copied out of the read-only map.
+- `Run.loop(loader, epochs, gpu_transform=None)`: the transform runs on each batch after it is on the device (no gradients). channels_last is applied after the transform. `efficio.on_inputs(t)` applies `t` to the inputs of a tuple/list batch or to `pixel_values` / `image` of a dict batch.
+- `speed/gpu_augment.py`: ToFloat, RepeatChannels, Resize, RandomResizedCrop, RandomAffine (rotation, translation and scale through affine_grid, correct for non-square images), RandomBrightnessContrast. They are batched, random per sample, and use the global torch RNG.
+- `run.clip_grad_norm(max_norm)`: unscales through the GradScaler before clipping, and only acts on the micro-batch where the optimizer steps (gradient accumulation). It returns the norm, or None while gradients are still accumulating.
+- `run.evaluate_mode()`: eval mode, no_grad and the run's autocast; restores the previous train/eval mode.
+- Report: when data-wait is above 10% and the dataset decodes image files every epoch (ImageFolder-like `samples`/`imgs`/`image_paths`, or "image" in the class name; not CachedImageDataset), the tip suggests ImageCache with an example. The GPULoader tip still takes priority when the data fits on the GPU. The setup tip now points to ImageCache instead of "a data cache is planned".
+- `examples/large_image_dataset.py`: image folder + CSV, cache build, CachedImageDataset + DataLoader, GPU augmentation, a pretrained torchvision ResNet/DenseNet, BCEWithLogitsLoss (multi-label) or cross-entropy, clip_grad_norm, evaluate_mode with mean AUROC, budget and resume. `--fake` generates 300 random grayscale PNGs.
+- `efficio.ImageCache`, `efficio.CachedImageDataset` and `efficio.on_inputs` are exported. Added a `pillow` optional extra. `image_cache/` and `fake_images/` are git-ignored.
+- README: new rows (needs GPU verification), a "Large image datasets" section, clip_grad_norm and evaluate_mode in the Quick start, Phase 2 progress.
+
+**Files touched**
+efficio/data/__init__.py (new), efficio/data/image_cache.py (new), efficio/speed/gpu_augment.py, efficio/run.py, efficio/report/profiler.py, efficio/__init__.py, examples/large_image_dataset.py (new), tests/test_image_cache.py (new), tests/test_large_image_features.py (new), tests/test_speed_and_report.py, README.md, PROGRESS.md, pyproject.toml, .gitignore
+
+**How it was tested**
+- pytest: 63 passed on Windows (torch 2.5.1+cpu, spawn workers) and on Linux/WSL (torch 2.14.1+cpu, fork workers). New tests cover:
+  - the cache build on generated PNGs (single-label RGB and multi-label grayscale, pixel-exact against PIL)
+  - an interrupted build that resumes and decodes only the missing chunks, with a result identical to a clean build
+  - a finished cache that returns immediately, and a rebuild when the settings change
+  - the process-pool build, and CachedImageDataset in a DataLoader with 2 workers and through optimize_loader
+  - each new augment op: shape, dtype, reproducible with the same seed, random per sample, exact geometry for 90 deg / 180 deg / 1-pixel shift
+  - on_inputs
+  - gpu_transform in Run.loop with a shuffled DataLoader: resume gives identical weights
+  - clip_grad_norm with a disabled scaler, with gradient accumulation, and with an enabled GradScaler (same result as unscaled fp32 clipping)
+  - evaluate_mode, and the image-file detection behind the tip
+- `examples/large_image_dataset.py --fake` on Linux/WSL CPU: first run built both caches and stopped on a 50 s budget at step 40; the second run reused the caches, resumed from (9, 4) and finished at step 120.
+
+**Still needs a GPU test**
+- ImageCache build speed (images/s) on Colab (2 cores) and Kaggle (4 cores) with real PNG/JPEG files; training speed and GPU utilization with CachedImageDataset + gpu_transform vs a normal ImageFolder DataLoader with CPU transforms.
+- gpu_transform with fp16 autocast and channels_last on a T4; clip_grad_norm with the real fp16 GradScaler; evaluate_mode speed.
+- The ImageCache tip on a real image-folder run with high data-wait.
+- Reading a cache from Google Drive (much slower than local disk) vs copying it to /content first.
+
+**Open questions**
+- The images are resized to the target size without keeping the aspect ratio. Fine for most X-ray/medical datasets (often square), but an aspect-preserving resize + center crop option may be useful.
+- RandomResizedCrop has no antialiasing when it shrinks a large crop (grid_sample). Cache at the training size so crops are only slightly scaled.
+- A 100k x 224 x 224 grayscale cache is about 5 GB (RGB about 15 GB). On Colab, building into /content and then copying to Drive is much faster than writing to Drive directly.
