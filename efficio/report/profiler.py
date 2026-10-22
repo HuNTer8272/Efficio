@@ -116,16 +116,28 @@ GPU_LOADER_EXAMPLE = (
     "loader = GPULoader.from_torchvision(train_set, batch_size=128, transform=A.Compose(\n"
     "    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))")
 
+IMAGE_CACHE_EXAMPLE = (
+    "from efficio.data import ImageCache, CachedImageDataset\n"
+    "ImageCache.build(paths, labels, \"cache/train\", size=(224, 224))   # once\n"
+    "loader = DataLoader(CachedImageDataset(\"cache/train\"), batch_size=64, shuffle=True)\n"
+    "for x, y in run.loop(loader, epochs, gpu_transform=efficio.on_inputs(augment)): ...")
 
-def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=False):
+
+def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=False,
+         image_files=False):
     """Plain-language advice from the measured numbers. gpu_util_pct may be None (no GPU data).
     The data-wait and utilization tips are about keeping a GPU busy, so they need on_gpu.
-    gpu_loader_fits: the training set is a torchvision dataset small enough for GPULoader."""
+    gpu_loader_fits: the training set is a torchvision dataset small enough for GPULoader.
+    image_files: the dataset decodes image files on every access (ImageCache would help)."""
     out = []
     if on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and gpu_loader_fits:
         out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Your dataset "
                    "fits in GPU memory, so keep it there and augment on the GPU:\n"
                    + GPU_LOADER_EXAMPLE)
+    elif on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and image_files:
+        out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time while the CPU "
+                   "decodes and resizes image files. Decode them once into an ImageCache and "
+                   "augment on the GPU:\n" + IMAGE_CACHE_EXAMPLE)
     elif on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT:
         out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Try more "
                    "DataLoader workers, or lighter CPU preprocessing.")
@@ -134,5 +146,6 @@ def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=Fa
                    "bottleneck. A larger batch size may use the GPU better.")
     if setup_pct > SETUP_TIP_PCT:
         out.append(f"Setup took {setup_pct:.0f}% of this run. Downloads or preprocessing are "
-                   "using your quota; a data cache is planned in Efficio.")
+                   "using your quota. For images, build an ImageCache once and reuse it "
+                   "in later sessions.")
     return out

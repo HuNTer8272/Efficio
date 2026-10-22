@@ -4,4 +4,6 @@ efficio_checkpoints/
 *.egg-info/
 .ipynb_checkpoints/
 .venv/
-data/
+/data/
+image_cache/
+fake_images/

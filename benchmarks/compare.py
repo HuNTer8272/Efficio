@@ -1,4 +1,4 @@
-"""Print all benchmark results and the Efficio speedup per platform.
+"""Print all benchmark results and the Efficio speedup per benchmark and platform.
 
 Run from the repo root:
     python benchmarks/compare.py
@@ -8,8 +8,10 @@ import json
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+DEFAULT_BENCHMARK = "resnet18-cifar10"      # results saved before the "benchmark" field
 
 COLUMNS = [
+    ("benchmark", "benchmark"),
     ("run", "run"),
     ("platform", "platform"),
     ("gpu", "gpu"),
@@ -20,6 +22,8 @@ COLUMNS = [
     ("peak mem GB", "peak_mem_gb"),
     ("GPU util %", "avg_gpu_util_pct"),
     ("test acc %", "test_acc_pct"),
+    ("data-wait %", "data_wait_pct"),
+    ("cache build s", "cache_build_s"),
 ]
 
 
@@ -27,7 +31,9 @@ def load_results():
     results = []
     for path in sorted(RESULTS_DIR.glob("*.json")):
         try:
-            results.append(json.loads(path.read_text()))
+            r = json.loads(path.read_text())
+            r.setdefault("benchmark", DEFAULT_BENCHMARK)
+            results.append(r)
         except (OSError, json.JSONDecodeError) as e:
             print(f"skipping {path.name}: {e}")
     return results
@@ -44,25 +50,29 @@ def print_table(results):
 
 
 def print_speedups(results):
-    """Speedup of the latest run of each kind (efficio, efficio-no-data-opt) over the
-    latest baseline, per platform."""
+    """Speedup of the latest run of each kind over the latest run of each baseline (a run
+    name containing "baseline", e.g. imagefolder-baseline-4workers), per benchmark and
+    platform."""
     print()
-    for platform in sorted({r["platform"] for r in results}):
+    for bench, platform in sorted({(r["benchmark"], r["platform"]) for r in results}):
         latest = {}
         for r in results:
-            if r["platform"] == platform:
+            if (r["benchmark"], r["platform"]) == (bench, platform):
                 if r["run"] not in latest or r.get("timestamp", "") > latest[r["run"]].get("timestamp", ""):
                     latest[r["run"]] = r
-        others = sorted(name for name in latest if name != "baseline")
-        if "baseline" not in latest or not others:
-            missing = "baseline" if "baseline" not in latest else "efficio"
-            print(f"{platform}: no {missing} run yet, can't compute a speedup")
+        bases = sorted(name for name in latest if "baseline" in name)
+        others = sorted(name for name in latest if "baseline" not in name)
+        if not bases or not others:
+            missing = "baseline" if not bases else "efficio"
+            print(f"{bench} / {platform}: no {missing} run yet, can't compute a speedup")
             continue
-        base = latest["baseline"]["epochs_per_hour"]
-        for name in others:
-            eff = latest[name]["epochs_per_hour"]
-            print(f"{platform}: {name} {eff} vs baseline {base} epochs/hour "
-                  f"-> {eff / base:.2f}x speedup")
+        for base_name in bases:
+            base = latest[base_name]["epochs_per_hour"]
+            label = "baseline" if len(bases) == 1 else base_name
+            for name in others:
+                eff = latest[name]["epochs_per_hour"]
+                print(f"{bench} / {platform}: {name} {eff} vs {label} {base} epochs/hour "
+                      f"-> {eff / base:.2f}x speedup")
 
 
 if __name__ == "__main__":
@@ -70,5 +80,6 @@ if __name__ == "__main__":
     if not results:
         print(f"No results in {RESULTS_DIR}. Run the benchmark scripts first.")
     else:
+        results.sort(key=lambda r: (r["benchmark"], r["platform"], r["run"]))
         print_table(results)
         print_speedups(results)

@@ -51,6 +51,35 @@ To measure the GPU data pipeline, add `--gpu-data`. The training set is then kep
 python benchmarks/resnet_cifar_efficio.py --epochs 5 --gpu-data
 ```
 
+## Image folder (large images decoded from disk)
+
+This benchmark measures the case GPULoader can't handle: images that don't fit in GPU memory and are decoded from files every epoch, as with a 100k-image X-ray dataset.
+
+| Script | What it does |
+|---|---|
+| `image_folder_baseline.py` | Plain PyTorch in fp32. A Dataset opens, decodes, resizes and augments every PNG on the CPU in each epoch (torchvision transforms, 2 DataLoader workers). Do not add speed-ups to it. |
+| `image_folder_efficio.py` | Builds an ImageCache once (timed and saved as `cache_build_s`; reused in later runs), then reads uint8 arrays and runs the same augmentation on the GPU through `gpu_transform`, with mixed precision and the DataLoader tuning. |
+| `image_common.py` | Shared data, split, model (ResNet-18, multi-label head), image size (224), batch size (64), augmentation settings and seed. It does not import Efficio. |
+
+Both use the same augmentation: resize to 224, random resized crop (scale 0.8-1.0), small random affine (7 degrees, 5% shift, 0.95-1.05 scale), horizontal flip, brightness/contrast 0.1, grayscale to 3 channels, ImageNet normalization.
+
+The Efficio run also tests budget stop and resume. After 2 full epochs, the time budget is set to run out halfway through epoch 3. The run saves and stops, then a fresh `Run` resumes and finishes. The result file records where it stopped, where it resumed and whether the final step count matches (`resume.ok`). The split epoch is left out of the epoch-time average.
+
+Data sources:
+
+```bash
+# Generated data: 5,000 grayscale 512x512 PNGs (written once to ./data/image_folder)
+python benchmarks/image_folder_baseline.py --fake --epochs 6
+python benchmarks/image_folder_efficio.py --fake --epochs 6
+
+# A real dataset: an image folder plus a CSV (filename + one 0/1 column per label)
+python benchmarks/image_folder_baseline.py --images /kaggle/input/xrays/images --labels /kaggle/input/xrays/labels.csv --limit 10000
+python benchmarks/image_folder_efficio.py --images /kaggle/input/xrays/images --labels /kaggle/input/xrays/labels.csv --limit 10000
+python benchmarks/compare.py
+```
+
+Results are saved as `imagefolder-baseline` and `imagefolder-efficio` with `"benchmark": "image-folder"`, and `compare.py` computes speedups per benchmark. The fake labels are random, so accuracy and AUROC on `--fake` data only confirm that training runs; compare speed there, not accuracy. `test_acc_pct` is the mean per-label accuracy at threshold 0.5, and `val_auroc` is the mean ROC AUC.
+
 ## Results
 
 Each run writes a JSON file to `benchmarks/results/`, named `{run}_{platform}_{timestamp}.json`. Commit these files so the whole team can compare results across platforms. Only report numbers that came from a real run.
