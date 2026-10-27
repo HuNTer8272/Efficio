@@ -1,0 +1,5 @@
+# Unix line endings in the repository and in every checkout, so builds are the same on
+# every machine. Windows scripts keep CRLF so cmd and PowerShell run them correctly.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
