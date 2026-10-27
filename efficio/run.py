@@ -364,7 +364,8 @@ class Run:
         advice = tips(prof.data_wait_pct, util, prof.setup_pct,
                       on_gpu=self.hw.device == "cuda",
                       gpu_loader_fits=self._gpu_loader_fits,
-                      image_files=self._image_files) if prof.steps else []
+                      image_files=self._image_files,
+                      train_s=prof.train_s) if prof.steps else []
         if advice:
             lines.append("  tips:")
             lines += ["    - " + t.replace("\n", "\n        ") for t in advice]

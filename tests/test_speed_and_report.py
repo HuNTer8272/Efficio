@@ -164,6 +164,21 @@ def test_tips():
     assert not any("ImageCache.build" in t for t in tips(5.0, 95.0, 1.0, image_files=True))
 
 
+def test_short_run_hides_setup_tip():
+    # Setup took 30% of the run: shown after 2 minutes of training, hidden before
+    assert any("Setup took" in t for t in tips(2.0, 95.0, 30.0, train_s=120.0))
+    assert not any("Setup took" in t for t in tips(2.0, 95.0, 30.0, train_s=119.0))
+    assert not any("Setup took" in t for t in tips(2.0, None, 96.0, on_gpu=False, train_s=3.0))
+
+
+def test_short_run_hides_batch_size_tip():
+    # Low utilization with little data-wait: shown after 2 minutes of training, hidden before
+    assert any("batch size" in t for t in tips(2.0, 60.0, 1.0, train_s=600.0))
+    assert not any("batch size" in t for t in tips(2.0, 60.0, 1.0, train_s=30.0))
+    # Data-wait tips still appear in short runs
+    assert any("waiting for data" in t for t in tips(25.0, 60.0, 1.0, train_s=30.0))
+
+
 # ---------- resume (quickstart-style) ----------
 
 def _train(ckpt_dir, epochs, stop_after=None):

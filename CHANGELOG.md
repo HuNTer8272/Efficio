@@ -2,6 +2,18 @@
 
 All notable changes to Efficio are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-27
+
+Patch release, no new features.
+
+### Changed
+
+- The report no longer shows the setup-time tip or the "larger batch size" tip when training took less than 2 minutes. In a short run, setup is naturally a large share of the time and GPU utilization is measured over too little time, so these tips were misleading. Fixes the known issue listed for 0.1.0.
+
+### Removed
+
+- The `hub`, `light` and `monitor` extras. The features they were meant for (Hugging Face Hub storage, light checkpoints, monitoring) are not released yet. `pip install efficio[dev]` still works.
+
 ## [0.1.0] - 2026-10-27
 
 First public release.
@@ -32,4 +44,5 @@ First public release.
 - On Windows and macOS, DataLoader workers are not added automatically.
 - Planned features (light checkpoints, Hub and Drive storage, automatic batch size, pre-flight check, budget planner, auto-shutdown, multi-GPU, notifications, framework adapters) are not included; their modules raise `NotImplementedError`.
 
+[0.1.1]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.0
