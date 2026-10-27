@@ -37,6 +37,7 @@ class RemoteCheckpoints:
         self.stats = {"uploads": 0, "upload_s": 0.0, "waited_s": 0.0, "last_file": None,
                       "last_bytes": None, "last_time": None, "last_ok": None,
                       "last_error": None, "cleanup_errors": 0, "downloaded": None}
+        self.replace_fingerprints = set()   # other runs' entries dropped at the next upload
         self._thread = None
         self._current = None
         self._error = None
@@ -76,7 +77,9 @@ class RemoteCheckpoints:
             entry = {"file": name, **info, "size": size, "sha256": digest,
                      "platform": self.platform, "time": _now()}
             manifest = self._retry("reading the manifest", self.storage.read_manifest) or {}
-            entries = [e for e in manifest.get("checkpoints", []) if e.get("file") != name]
+            entries = [e for e in manifest.get("checkpoints", []) if e.get("file") != name
+                       and (e.get("fingerprint") or {}).get("hash")
+                       not in self.replace_fingerprints]
             entries.append(entry)
             kept = entries[-self.keep:]
             # The new file counts only once the manifest names it; older files go after that.
@@ -152,11 +155,15 @@ class RemoteCheckpoints:
         return "ok", f"{name} ({size / 1024**2:.1f} MB) is in {self.storage.describe()}"
 
     # ---------- resuming ----------
+    def entries(self):
+        """The checkpoint entries of the manifest, oldest first."""
+        manifest = self._retry("reading the manifest", self.storage.read_manifest) or {}
+        return [e for e in manifest.get("checkpoints", [])
+                if CHECKPOINT_NAME.match(str(e.get("file", ""))) and e.get("sha256")]
+
     def latest(self):
         """The newest checkpoint entry in the manifest, or None."""
-        manifest = self._retry("reading the manifest", self.storage.read_manifest) or {}
-        entries = [e for e in manifest.get("checkpoints", [])
-                   if CHECKPOINT_NAME.match(str(e.get("file", ""))) and e.get("sha256")]
+        entries = self.entries()
         return entries[-1] if entries else None
 
     def download(self, entry, directory):

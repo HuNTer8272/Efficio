@@ -18,7 +18,10 @@ from torch import nn  # noqa: E402
 from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
 import efficio  # noqa: E402
-from efficio.checkpoint.manager import CheckpointMismatchError  # noqa: E402
+from efficio.checkpoint.manager import (  # noqa: E402
+    CheckpointMismatchError,
+    StorageInUseError,
+)
 from efficio.interfaces import HardwareInfo  # noqa: E402
 from efficio.storage import (  # noqa: E402
     MANIFEST,
@@ -247,16 +250,37 @@ def test_other_mode_is_the_same_run(tmp_path, hardware):
 
 
 @pytest.mark.parametrize("change", [{"width": 16}, {"optim": torch.optim.SGD}])
-def test_different_run_in_storage_starts_fresh_with_a_warning(tmp_path, hardware, capsys,
-                                                             change):
+@pytest.mark.parametrize("resume", ["auto", False])
+def test_storage_of_a_different_run_is_refused(tmp_path, hardware, change, resume):
     store = FakeStorage()
     _train(tmp_path / "a", store, stop_at=5)                        # step 6 in storage
-    run, _ = _train(tmp_path / "b", store, epochs=1, **change)
+    before = dict(store.files)
+    with pytest.raises(StorageInUseError) as error:
+        _train(tmp_path / "b", store, epochs=1, resume=resume, **change)
+    message = str(error.value)
+    assert "fake://bucket (step 6)" in message and "different run" in message
+    assert "Adam, 4 parameter tensors, fingerprint " in message
+    assert ("Use a different storage path, or pass overwrite_storage=True to replace that "
+            "run's checkpoints") in message
+    assert isinstance(error.value, CheckpointMismatchError)
+    assert store.files == before                                    # nothing written there
+    assert os.listdir(tmp_path / "b") == []
+
+
+def test_overwrite_storage_replaces_the_other_run(tmp_path, hardware, capsys):
+    store = FakeStorage()
+    _train(tmp_path / "a", store, stop_at=5)                        # other run: step 6
+    run, _ = _train(tmp_path / "b", store, epochs=1, width=16, overwrite_storage=True)
     out = capsys.readouterr().out
-    assert "WARNING: not resuming from fake://bucket (step 6)" in out
-    assert "different run" in out and "Starting fresh" in out
+    assert "WARNING: overwrite_storage=True: fake://bucket holds 1 checkpoint(s)" in out
     assert run.remote.stats["downloaded"] is None and run._resumed_from is None
     assert run.state.step == 4                                      # trained from step 0
+    entries = _manifest(store)["checkpoints"]
+    assert [e["step"] for e in entries] == [4]                      # only this run's
+    assert _ckpts(store) == ["ckpt_step000000004.pt"]               # other run's file deleted
+    assert entries[0]["fingerprint"] == run.ckpt.fingerprint
+    again, _ = _train(tmp_path / "c", store, epochs=2, width=16)    # now this run's storage
+    assert again.remote.stats["downloaded"]["step"] == 4 and again.state.step == 8
 
 
 def test_different_run_in_storage_raises_with_explicit_resume(tmp_path, hardware):

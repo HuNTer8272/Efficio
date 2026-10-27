@@ -24,6 +24,7 @@ from .budget import shutdown
 from .checkpoint import CheckpointManager
 from .checkpoint.manager import (
     DifferentRunError,
+    StorageInUseError,
     _efficio_version,
     _rng_state,
     _set_rng_state,
@@ -111,6 +112,10 @@ class Run:
         it is saved; budget, shutdown-signal and final saves wait for the upload. When there
         is no newer checkpoint on this machine, prepare() downloads the latest one from there.
     keep_remote: how many checkpoints to keep in storage (default 3).
+    overwrite_storage: if storage already holds checkpoints of a different run (other
+        parameter names or shapes, or another optimizer type), prepare() refuses to start
+        unless this is True (default False). With True, that run's checkpoints are never
+        resumed and are replaced by this run's as it saves.
     upload_timeout: seconds a budget, shutdown-signal or final save waits for its upload.
     shutdown_when_done: on Colab, release the runtime after run.report() once the final
         checkpoint is confirmed in storage, so no GPU quota is wasted (default False).
@@ -120,7 +125,7 @@ class Run:
                  grad_accum_steps=1, resume="auto", verbose=True,
                  optimize_data=True, channels_last="auto", checkpoint_mode="exact",
                  save_trainable_only="auto", async_save=True, storage=None, keep_remote=3,
-                 upload_timeout=120, shutdown_when_done=False):
+                 overwrite_storage=False, upload_timeout=120, shutdown_when_done=False):
         if save_trainable_only not in ("auto", True, False):
             raise ValueError('save_trainable_only must be "auto", True or False, '
                              f"not {save_trainable_only!r}")
@@ -137,6 +142,7 @@ class Run:
                                                      session_disk=storage is not None),
             mode=checkpoint_mode, async_save=async_save)
         self.remote = self._open_storage(storage, keep_remote) if storage is not None else None
+        self.overwrite_storage = overwrite_storage
         self.upload_timeout = upload_timeout
         self._final_upload = None                # (path, status) of the last waited-for upload
         self.shutdown_when_done = shutdown_when_done
@@ -211,6 +217,8 @@ class Run:
             self._log(f"[efficio] checkpoints: trainable parameters only "
                       f"({frozen} frozen tensors are checked, not saved)")
         self.ckpt.fingerprint = run_fingerprint(self.model, optimizer)
+        if self.remote is not None:
+            self._check_storage_owner()
         if self.resume:
             path = self._resume_file()
             try:
@@ -247,11 +255,8 @@ class Run:
             return local
         if entry is None or (local is not None and checkpoint_step(local) >= entry["step"]):
             return local
-        saved_fp, mine = entry.get("fingerprint"), self.ckpt.fingerprint
-        if saved_fp and saved_fp.get("hash") != mine["hash"]:       # checked before download
-            self._different_run(DifferentRunError(f"{where} (step {entry['step']})",
-                                                  saved_fp, mine))
-            return local                # a matching local checkpoint can still be resumed
+        if self._other_run(entry):      # only with overwrite_storage=True; never resumed
+            return local
         if local is not None:
             self._log(f"[efficio] {where} has a newer checkpoint (step {entry['step']}) than "
                       f"this machine (step {checkpoint_step(local)})")
@@ -260,6 +265,33 @@ class Run:
                   f"{entry.get('mode', 'exact')} mode, saved on {entry.get('platform', '?')} "
                   f"at {entry.get('time', '?')}; sha256 verified")
         return path
+
+    def _other_run(self, entry):
+        """True for a manifest entry saved by a different run (entries from before the
+        fingerprint have none and count as this run's)."""
+        saved = entry.get("fingerprint")
+        return bool(saved) and saved.get("hash") != self.ckpt.fingerprint["hash"]
+
+    def _check_storage_owner(self):
+        """Refuse to write into storage that holds another run's checkpoints, unless
+        overwrite_storage=True. Runs before anything is written there."""
+        from .storage import StorageError
+        where = self.remote.storage.describe()
+        try:
+            others = [e for e in self.remote.entries() if self._other_run(e)]
+        except StorageError as e:
+            raise StorageError(f"Could not read the checkpoint list in {where}: {e}. Nothing "
+                               "was changed there; check the connection and token.") from None
+        if not others:
+            return
+        newest = others[-1]
+        if not self.overwrite_storage:
+            raise StorageInUseError(f"{where} (step {newest['step']})", newest["fingerprint"],
+                                    self.ckpt.fingerprint)
+        self.remote.replace_fingerprints = {e["fingerprint"]["hash"] for e in others}
+        print(f"[efficio] WARNING: overwrite_storage=True: {where} holds {len(others)} "
+              f"checkpoint(s) of a different run (newest at step {newest['step']}). They are "
+              "not resumed, and are deleted once this run's first checkpoint is uploaded.")
 
     def _different_run(self, error):
         """A checkpoint from another run: raise with resume=True, else warn and go on."""

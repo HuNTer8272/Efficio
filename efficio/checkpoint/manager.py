@@ -61,6 +61,19 @@ class DifferentRunError(CheckpointMismatchError):
         self.where, self.saved, self.current = where, saved, current
 
 
+class StorageInUseError(DifferentRunError):
+    """The storage already holds checkpoints of a different run."""
+
+    def __init__(self, where, saved, current):
+        CheckpointMismatchError.__init__(
+            self,
+            f"{where} holds checkpoints of a different run ({describe_fingerprint(saved)}, "
+            f"fingerprint {saved.get('hash')}; this run: {describe_fingerprint(current)}, "
+            f"fingerprint {current['hash']}). Nothing was written there. Use a different "
+            "storage path, or pass overwrite_storage=True to replace that run's checkpoints.")
+        self.where, self.saved, self.current = where, saved, current
+
+
 def run_fingerprint(model, optimizer):
     """What identifies a run's checkpoints: the model's parameter names and shapes and the
     optimizer type. The checkpoint mode is not part of it."""
