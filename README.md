@@ -153,7 +153,7 @@ Building the cache took about 36 s on cold files (139 images/s); later runs reus
 
 ## Works with
 
-- PyTorch 2.0 or newer, Python 3.9 or newer
+- PyTorch 2.0 or newer, Python 3.10 or newer
 - Google Colab and Kaggle notebooks
 - A local NVIDIA GPU, or CPU (for development and testing)
 

@@ -22,9 +22,13 @@ First public release.
 - `efficio.gpu_augment`: batched GPU augmentation (random crop, resized crop, affine, horizontal flip, brightness and contrast, resize, normalize, to-float, repeat channels).
 - Platform and GPU detection (`efficio.detect_platform`, `efficio.detect_hardware`) for Colab, Kaggle and local machines.
 
+### Known issues
+
+- The report's setup-time tip ("Setup took N% of this run...") also appears on very short runs, where setup is naturally a large share of a few seconds. It can be ignored there.
+
 ### Known limitations
 
-- PyTorch only; single GPU.
+- PyTorch only; single GPU; Python 3.10 or newer.
 - On Windows and macOS, DataLoader workers are not added automatically.
 - Planned features (light checkpoints, Hub and Drive storage, automatic batch size, pre-flight check, budget planner, auto-shutdown, multi-GPU, notifications, framework adapters) are not included; their modules raise `NotImplementedError`.
 

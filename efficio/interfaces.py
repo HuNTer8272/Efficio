@@ -1,11 +1,13 @@
 """Shared data objects. Both teammates build against these, so change them together."""
 
-from dataclasses import dataclass, field, asdict
 import time
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass
 class HardwareInfo:
+    """The platform and GPU a run uses, as found by efficio.detect_hardware()."""
+
     platform: str                 # "colab", "kaggle" or "local"
     device: str                   # "cuda" or "cpu"
     gpu_name: str = "none"        # e.g. "Tesla T4"
@@ -27,6 +29,9 @@ class HardwareInfo:
 
 @dataclass
 class Budget:
+    """A time budget: total seconds, the safety margin kept for the final save, and the
+    start time. Create one with Budget.parse("2h")."""
+
     total_seconds: float = 0.0             # 0 = no budget
     safety_margin_seconds: float = 600.0   # stop and save this long before the end
     started_at: float = field(default_factory=time.time)
@@ -53,19 +58,25 @@ class Budget:
         return cls(total, safety_margin_seconds)
 
     def elapsed(self) -> float:
+        """Seconds since the budget started."""
         return time.time() - self.started_at
 
     def remaining(self) -> float:
+        """Seconds left, or infinity when there is no budget."""
         if self.total_seconds <= 0:
             return float("inf")
         return self.total_seconds - self.elapsed()
 
     def nearly_out(self) -> bool:
+        """True once the time left is within the safety margin."""
         return self.remaining() <= self.safety_margin_seconds
 
 
 @dataclass
 class TrainState:
+    """Where training is: epoch, optimizer step and position in the epoch. Saved in every
+    checkpoint."""
+
     epoch: int = 0
     step: int = 0                  # optimizer steps taken in total
     batch_in_epoch: int = 0        # batches already done in the current epoch
@@ -73,4 +84,5 @@ class TrainState:
     grad_accum_steps: int = 1
 
     def to_dict(self):
+        """The fields as a plain dict (stored in checkpoints)."""
         return asdict(self)
