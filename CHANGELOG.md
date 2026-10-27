@@ -6,11 +6,15 @@ All notable changes to Efficio are listed here. The format follows [Keep a Chang
 
 ### Added
 
-- Light checkpoints: `Run(checkpoint_mode="light")` stores floating-point weights in fp16 (cast back to their original dtype on load) and large optimizer state tensors with 8-bit blockwise quantization (pure PyTorch). Files are about 3x smaller for Adam-trained models. Scheduler, gradient scaler, RNG states and position are saved exactly; the resume is close but not bit-identical. The default stays `"exact"`.
+- Checkpoint modes: `Run(checkpoint_mode="exact" | "light" | "smallest")`. Any mode resumes from checkpoints written in any other.
+  - `"exact"` (default, unchanged): everything at full precision, bit-identical resume.
+  - `"light"`: weights at full precision; large optimizer state tensors compressed with 8-bit blockwise quantization (pure PyTorch). About 2x smaller for Adam-trained models. The weights resume exactly; only the optimizer state is approximate.
+  - `"smallest"`: like light, plus floating-point weights stored in fp16 (cast back on load). About 3x smaller, with a slight effect after resume.
+  - In light and smallest, the scheduler, gradient scaler, RNG states and position are saved exactly.
 - Trainable-only checkpoints: `Run(save_trainable_only="auto" | True | False)`. With `"auto"` (the default), frozen parameters are left out of the checkpoint when the model has any, and a signature of them is saved instead. Resuming with different frozen weights raises `CheckpointMismatchError` instead of continuing silently.
 - Background saving: `Run(async_save=True)` (default) writes periodic checkpoints in a background thread after a fast copy to CPU memory. Budget, shutdown-signal and final saves wait for it and write synchronously. A failed background save raises at the next `run.step()`. `run.save(blocking=False)` starts a background save yourself.
 - Checkpoint metadata (format version, Efficio version, mode, trainable-only flag, sizes), and report lines with the checkpoint mode, the last file size and the save time hidden by background saving.
-- `benchmarks/checkpoint_sizes.py`: file size and save time for exact, light and trainable-only checkpoints, and the effect of a light resume.
+- `benchmarks/checkpoint_sizes.py`: file size, save time and resume quality (after one and three resumes, against an uninterrupted run and a tiny-noise baseline) for the three modes and trainable-only. `benchmarks/verify_light_resume.py`: budget stop and resume checks for light and smallest.
 
 ### Changed
 

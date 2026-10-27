@@ -61,7 +61,7 @@ These work and are covered by CPU tests, but haven't been confirmed on a GPU yet
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
 - **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
 - **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
-- **Light checkpoints** (`Run(checkpoint_mode="light")`): fp16 weights and 8-bit optimizer state, about 3x smaller files for Adam-trained models. The resume is close but not bit-identical. Not in a PyPI release yet.
+- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Not in a PyPI release yet.
 - **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Not in a PyPI release yet.
 - **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Not in a PyPI release yet.
 
@@ -116,14 +116,23 @@ with run.evaluate_mode():        # eval mode, no gradients, mixed precision
 ```python
 run = efficio.Run(
     budget="2h",
-    checkpoint_mode="exact",        # or "light": ~3x smaller, resume close but not bit-identical
+    checkpoint_mode="exact",        # or "light" (~2x smaller) or "smallest" (~3x smaller)
     save_trainable_only="auto",     # "auto": skip frozen parameters when some are frozen
     async_save=True,                # periodic saves written in the background
 )
 ```
 
-- **`checkpoint_mode="exact"`** (default) saves everything needed for a bit-identical resume.
-- **`checkpoint_mode="light"`** stores floating-point weights in fp16 (cast back to their original dtype on load; integer buffers are unchanged) and large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. The scheduler, gradient scaler, RNG states and position are saved exactly. A resumed run continues from nearly the same weights and optimizer state, so its loss curve stays close to an uninterrupted run but is not identical. Use it when disk space or upload time matters more than an exact resume.
+Three checkpoint modes. Any mode can resume from a checkpoint written in any other mode.
+
+| Mode | What is stored | Size (Adam) | Resume | Use it when |
+|---|---|---|---|---|
+| `"exact"` (default) | everything at full precision | 1x | bit-identical | you want the safest choice |
+| `"light"` | full-precision weights, 8-bit optimizer state | about 2x smaller | weights exact; optimizer state approximate, a tiny effect on training | you want smaller files without rounding any weights |
+| `"smallest"` | fp16 weights, 8-bit optimizer state | about 3x smaller | weights rounded to fp16, a slight effect after resume | file size matters most (slow uploads, little disk space) |
+
+- **Light and smallest** compress large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. For Adam, `exp_avg_sq` is stored as its square root and `exp_avg` as its ratio to it, so the update direction after a resume matches the saved one within one quantization step. With SGD the saving is smaller (about 1.6x for light), because momentum is half of the checkpoint.
+- **Smallest** also stores floating-point weights in fp16 and casts them back to their original dtype on load. Integer buffers are unchanged.
+- In both modes, the scheduler, gradient scaler, RNG states and position are saved exactly.
 - **`save_trainable_only="auto"`** (default) leaves frozen parameters (`requires_grad=False`) out of the checkpoint when the model has any, and saves a signature of them instead (names, shapes, dtypes and a checksum). On resume, the model must have the same frozen weights, so load the same pretrained model and freeze the same layers before `run.prepare()`. If they differ, Efficio raises an error instead of resuming. `True` and `False` force it on or off. Buffers such as BatchNorm statistics are always saved.
 - **`async_save=True`** (default) copies the state to CPU memory at a periodic save and writes the file in a background thread, so training continues. Only one save runs at a time. Saves for the time budget, a shutdown signal and the end of training wait for any background save and then write synchronously. If a background save fails, the error is raised at the next `run.step()`. `run.save()` called by you waits until the file is written.
 

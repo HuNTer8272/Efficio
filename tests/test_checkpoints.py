@@ -72,7 +72,7 @@ def test_exact_mode_is_bit_identical_and_has_metadata(tmp_path):
     mgr = CheckpointManager(str(tmp_path))
     path = mgr.save(TrainState(step=1), model, opt)
     meta = torch.load(path, weights_only=False)["meta"]
-    assert meta["format_version"] == 2 and meta["mode"] == "exact"
+    assert meta["format_version"] == 3 and meta["mode"] == "exact"
     assert meta["trainable_only"] is False and meta["sizes"]["model_bytes"] > 0
     fresh, fresh_opt = _adam_model(steps=0)
     mgr.load(fresh, fresh_opt)
@@ -126,13 +126,60 @@ def test_adam_state_round_trip_is_close_and_safe():
 
 # ---------- light mode ----------
 
-def test_light_file_is_much_smaller(tmp_path):
+def test_size_ratio_per_mode(tmp_path):
     model, opt = _adam_model(width=512)
-    exact = CheckpointManager(str(tmp_path / "exact")).save(TrainState(step=1), model, opt)
-    light = CheckpointManager(str(tmp_path / "light"), mode="light").save(
-        TrainState(step=1), model, opt)
-    ratio = os.path.getsize(exact) / os.path.getsize(light)
-    assert ratio >= 2.5, f"light file only {ratio:.2f}x smaller"
+    size = {}
+    for mode in ("exact", "light", "smallest"):
+        path = CheckpointManager(str(tmp_path / mode), mode=mode).save(
+            TrainState(step=1), model, opt)
+        size[mode] = os.path.getsize(path)
+    light_ratio, smallest_ratio = size["exact"] / size["light"], size["exact"] / size["smallest"]
+    assert 1.8 <= light_ratio < 2.5, f"light: {light_ratio:.2f}x smaller"       # about 2x
+    assert smallest_ratio >= 2.5, f"smallest: {smallest_ratio:.2f}x smaller"   # about 3x
+
+
+def test_light_resume_has_the_exact_weights(tmp_path):
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path), mode="light")
+    payload = torch.load(mgr.save(TrainState(step=1), model, opt), weights_only=False)
+    assert payload["model"]["0.weight"].dtype == torch.float32          # no rounding
+    assert payload["meta"]["mode"] == "light" and payload["meta"]["model_dtypes"] == {}
+    fresh, fresh_opt = _adam_model(steps=0)
+    mgr.load(fresh, fresh_opt)
+    for a, b in zip(model.state_dict().values(), fresh.state_dict().values()):
+        assert torch.equal(a, b)
+    # only the optimizer state is approximate
+    m, m2 = opt.state_dict()["state"][0]["exp_avg"], fresh_opt.state_dict()["state"][0]["exp_avg"]
+    assert not torch.equal(m, m2) and torch.allclose(m, m2, atol=m.abs().max().item() / 50)
+
+
+def test_any_mode_loads_any_checkpoint(tmp_path):
+    model, opt = _adam_model()
+    for written in ("exact", "light", "smallest"):
+        path = CheckpointManager(str(tmp_path / written), mode=written).save(
+            TrainState(step=2), model, opt)
+        for current in ("exact", "light", "smallest"):
+            fresh, fresh_opt = _adam_model(steps=0)
+            reader = CheckpointManager(str(tmp_path / written), mode=current)
+            assert reader.load(fresh, fresh_opt, path=path)["step"] == 2
+            assert reader.meta["mode"] == written
+
+
+def test_early_light_checkpoint_loads_as_smallest(tmp_path):
+    """Format 2 (early 0.2.0 builds): "light" meant fp16 weights + 8-bit optimizer state."""
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path), mode="smallest")
+    path = mgr.save(TrainState(step=4), model, opt)
+    payload = torch.load(path, weights_only=False)
+    payload["format_version"] = payload["meta"]["format_version"] = 2
+    payload["mode"] = payload["meta"]["mode"] = "light"
+    torch.save(payload, path)
+    fresh, fresh_opt = _adam_model(steps=0)
+    assert mgr.load(fresh, fresh_opt)["step"] == 4
+    assert mgr.meta["mode"] == "smallest" and "format 2" in mgr.meta["written_as"]
+    assert fresh[0].weight.dtype == torch.float32
+    assert (fresh[0].weight - model[0].weight).abs().max() < 1e-3      # fp16 tolerance
+    assert not torch.equal(fresh[0].weight, model[0].weight)
 
 
 def _train(ckpt_dir, epochs, mode="exact", stop_after=None, **run_kwargs):
@@ -154,10 +201,11 @@ def _train(ckpt_dir, epochs, mode="exact", stop_after=None, **run_kwargs):
     return run, model, loss.item()
 
 
-def test_light_mode_resumes_close_with_same_step_count(tmp_path, cpu_only):
+@pytest.mark.parametrize("mode", ["light", "smallest"])
+def test_compressed_modes_resume_close_with_same_step_count(tmp_path, cpu_only, mode):
     full, full_model, full_loss = _train(tmp_path / "full", epochs=3)
-    _train(tmp_path / "light", epochs=3, mode="light", stop_after=13)
-    resumed, model, loss = _train(tmp_path / "light", epochs=3, mode="light")
+    _train(tmp_path / mode, epochs=3, mode=mode, stop_after=13)
+    resumed, model, loss = _train(tmp_path / mode, epochs=3, mode=mode)
     assert resumed._resumed_from == (1, 5)
     assert resumed.state.step == full.state.step == 24
     diff = max((a - b).abs().max().item()
@@ -166,9 +214,9 @@ def test_light_mode_resumes_close_with_same_step_count(tmp_path, cpu_only):
     assert abs(loss - full_loss) < 0.05
 
 
-def test_fp16_weights_are_upcast_on_load(tmp_path):
+def test_smallest_stores_fp16_weights_and_upcasts_on_load(tmp_path):
     model, opt = _adam_model()
-    mgr = CheckpointManager(str(tmp_path), mode="light")
+    mgr = CheckpointManager(str(tmp_path), mode="smallest")
     payload = torch.load(mgr.save(TrainState(step=1), model, opt), weights_only=False)
     assert payload["model"]["0.weight"].dtype == torch.float16
     fresh, fresh_opt = _adam_model(steps=0)
@@ -330,7 +378,28 @@ def test_report_shows_checkpoint_mode_size_and_time(tmp_path, cpu_only, capsys):
     assert "save time" in out
 
 
-def test_invalid_mode_is_refused(tmp_path):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("mode", ["exact", "light", "smallest"])
+def test_trainable_only_and_background_save_in_every_mode(tmp_path, mode):
+    model, opt = _frozen_backbone()
+    _step(model, opt)
+    mgr = CheckpointManager(str(tmp_path), mode=mode, trainable_only=True, async_save=True)
+    path = mgr.save(TrainState(step=3), model, opt, blocking=False)
+    mgr.wait()
+    meta = torch.load(path, weights_only=False)["meta"]
+    assert meta["mode"] == mode and meta["trainable_only"] and len(meta["frozen"]) == 4
+    fresh, fresh_opt = _frozen_backbone()
+    assert mgr.load(fresh, fresh_opt)["step"] == 3
+    tol = 1e-3 if mode == "smallest" else 0.0
+    for a, b in zip(model.parameters(), fresh.parameters()):
+        assert (a - b).abs().max() <= tol
+    other, other_opt = _frozen_backbone(seed=99)
+    with pytest.raises(CheckpointMismatchError):
+        mgr.load(other, other_opt)
+
+
+def test_invalid_mode_is_refused(tmp_path, cpu_only):
+    with pytest.raises(ValueError, match="smallest"):
         CheckpointManager(str(tmp_path), mode="tiny")
+    with pytest.raises(ValueError, match="exact"):
+        efficio.Run(checkpoint_dir=str(tmp_path), checkpoint_mode="light-ish", verbose=False)
     random.random()

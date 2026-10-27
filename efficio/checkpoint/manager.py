@@ -1,10 +1,13 @@
 """Save and resume training safely.
 
-Two modes:
-- "exact" (default): everything needed to continue a run exactly where it stopped, with a
-  bit-identical resume.
-- "light": fp16 model weights and 8-bit optimizer state (see checkpoint/light.py). Files are
-  about 3x smaller for Adam-trained models; a resume is close but not bit-identical.
+Three modes (see checkpoint/light.py for the encodings):
+- "exact" (default): everything at full precision; a bit-identical resume.
+- "light": model weights at full precision, optimizer state compressed to 8 bits. About 2x
+  smaller for Adam-trained models. The weights resume exactly; only the optimizer's
+  momentum and second-moment estimates are approximate, so the effect on training is tiny.
+- "smallest": like light, plus floating-point weights stored in fp16. About 3x smaller; the
+  weights are rounded to fp16, a slight effect after a resume.
+Any mode loads whatever mode the checkpoint was written in.
 
 With trainable_only, frozen parameters (requires_grad=False) are not saved. A signature of
 them (names, shapes, dtypes and a checksum) is saved instead, and loading refuses to resume
@@ -34,8 +37,10 @@ try:
 except ImportError:          # numpy is optional
     np = None
 
-FORMAT_VERSION = 2           # 0.1.x checkpoints are format 1
-MODES = ("exact", "light")
+# Format 1: Efficio 0.1.x. Format 2: early 0.2.0 builds, where "light" meant fp16 weights
+# plus 8-bit optimizer state (now called "smallest"). Format 3: exact / light / smallest.
+FORMAT_VERSION = 3
+MODES = ("exact", "light", "smallest")
 _SIGNATURE_SAMPLE = 4096     # elements hashed per frozen tensor
 
 
@@ -125,7 +130,9 @@ class CheckpointManager:
     def __init__(self, directory, keep_last=2, mode="exact", trainable_only=False,
                  async_save=False):
         if mode not in MODES:
-            raise ValueError(f'checkpoint mode must be "exact" or "light", not {mode!r}')
+            raise ValueError('checkpoint_mode must be "exact" (default, bit-identical), '
+                             '"light" (8-bit optimizer state, about 2x smaller) or "smallest" '
+                             f"(also fp16 weights, about 3x smaller), not {mode!r}")
         self.directory = directory
         self.keep_last = keep_last
         self.mode = mode
@@ -152,7 +159,7 @@ class CheckpointManager:
         self.wait()                                 # one save at a time; raises old errors
         background = self.async_save and not blocking
         payload = self._payload(train_state, model, optimizer, scheduler, scaler, extra,
-                                copy_state=background or self.mode == "light")
+                                copy_state=background or self.mode != "exact")
         final = self._path(train_state.step)
         if background:
             self._thread = threading.Thread(target=self._write_in_background,
@@ -177,8 +184,9 @@ class CheckpointManager:
             model_sd, opt_sd, sched_sd, scaler_sd = (_to_cpu(model_sd), _to_cpu(opt_sd),
                                                      _to_cpu(sched_sd), _to_cpu(scaler_sd))
         dtypes = {}
-        if self.mode == "light":
+        if self.mode == "smallest":                 # fp16 weights
             model_sd, dtypes = light.encode_model(model_sd)
+        if self.mode in ("light", "smallest"):      # 8-bit optimizer state
             opt_sd = light.encode_optimizer(opt_sd)
         meta = {
             "format_version": FORMAT_VERSION,
@@ -255,19 +263,24 @@ class CheckpointManager:
 
     def load(self, model, optimizer, scheduler=None, scaler=None, path=None, map_location="cpu"):
         """Restore everything. Returns the saved train_state dict, or None if nothing to
-        resume. Reads exact and light checkpoints and those written by Efficio 0.1.x."""
+        resume. Reads checkpoints in any mode (whatever this manager's own mode is), those
+        written by Efficio 0.1.x, and early 0.2.0 "light" checkpoints (as "smallest")."""
         self.wait()
         path = path or self.latest()
         if path is None:
             return None
         # Our own file holds RNG states and plain dicts, so the weights_only loader can't read it.
         payload = torch.load(path, map_location=map_location, weights_only=False)
-        meta = payload.get("meta") or {}                    # 0.1.x checkpoints have none
+        meta = dict(payload.get("meta") or {})              # 0.1.x checkpoints have none
         mode = meta.get("mode", payload.get("mode", "exact"))
+        if meta.get("format_version") == 2 and mode == "light":
+            mode = meta["mode"] = "smallest"                # early builds' "light"
+            meta["written_as"] = "light (format 2)"
         model_sd = payload["model"]
         opt_sd = payload["optimizer"]
-        if mode == "light":
-            model_sd = light.decode_model(model_sd, meta.get("model_dtypes", {}))
+        if meta.get("model_dtypes"):                        # fp16 weights: cast back
+            model_sd = light.decode_model(model_sd, meta["model_dtypes"])
+        if mode in ("light", "smallest"):
             opt_sd = light.decode_optimizer(opt_sd)
         if meta.get("trainable_only"):
             self._load_trainable_only(model, model_sd, meta.get("frozen", {}), path)

@@ -1,11 +1,15 @@
-"""Light checkpoints: smaller files, close but not bit-identical resume.
+"""Encodings for the "light" and "smallest" checkpoint modes.
 
-Model weights: floating-point tensors are stored in fp16 and cast back to their original
-dtype on load (integer buffers, fp16/bf16 tensors and values too large for fp16 are kept
-as they are).
+"light" compresses only the optimizer state (below); the model weights stay at full precision.
+"smallest" also stores the weights in fp16.
 
-Optimizer state: floating-point tensors with at least MIN_QUANT_NUMEL elements are stored
-with 8-bit blockwise quantization (one fp32 scale per block of BLOCK values, pure PyTorch).
+Model weights ("smallest" only): floating-point tensors are stored in fp16 and cast back to
+their original dtype on load (integer buffers, fp16/bf16 tensors and values too large for
+fp16 are kept as they are).
+
+Optimizer state ("light" and "smallest"): floating-point tensors with at least
+MIN_QUANT_NUMEL elements are stored with 8-bit blockwise quantization (one fp32 scale per
+block of BLOCK values, pure PyTorch).
 Adam-style state gets two refinements so a resumed run behaves:
 - exp_avg_sq (and max_exp_avg_sq) is quantized as its square root, which shrinks its
   dynamic range;

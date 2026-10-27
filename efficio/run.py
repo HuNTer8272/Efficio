@@ -81,9 +81,11 @@ class Run:
     resume: continue from the latest checkpoint in checkpoint_dir if there is one.
     optimize_data: tune DataLoaders passed to loop() (workers, pinned memory, prefetching).
     channels_last: "auto", True or False; channels_last memory format for conv models on GPU.
-    checkpoint_mode: "exact" (default; bit-identical resume) or "light" (fp16 weights and
-        8-bit optimizer state, about 3x smaller files; the resume is close but not
-        bit-identical).
+    checkpoint_mode: how checkpoints are stored; any mode can resume from any other.
+        "exact" (default, safest): everything at full precision, bit-identical resume.
+        "light": weights at full precision, optimizer state in 8 bits; about 2x smaller for
+        Adam, the weights resume exactly and the effect on training is tiny.
+        "smallest": light plus fp16 weights; about 3x smaller, a slight effect after resume.
     save_trainable_only: "auto" (default: only when some parameters are frozen), True or
         False. Frozen parameters are left out of checkpoints; resuming checks that the
         model's frozen weights are the same ones.
@@ -152,7 +154,11 @@ class Run:
         self.ckpt.trainable_only = (frozen > 0 if self.save_trainable_only == "auto"
                                     else bool(self.save_trainable_only))
         if self.ckpt.mode == "light":
-            self._log("[efficio] checkpoints: light mode (fp16 weights, 8-bit optimizer state)")
+            self._log("[efficio] checkpoints: light mode (full-precision weights, "
+                      "8-bit optimizer state)")
+        elif self.ckpt.mode == "smallest":
+            self._log("[efficio] checkpoints: smallest mode (fp16 weights, "
+                      "8-bit optimizer state)")
         if self.ckpt.trainable_only and frozen:
             self._log(f"[efficio] checkpoints: trainable parameters only "
                       f"({frozen} frozen tensors are checked, not saved)")
