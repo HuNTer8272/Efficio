@@ -1,6 +1,6 @@
 """Save and resume training safely.
 
-Phase 1: local disk, "exact" mode. Light mode and Hugging Face Hub / Drive storage come in Phase 2.
+Local disk, "exact" mode: everything needed to continue a run exactly where it stopped.
 """
 
 import glob
@@ -35,6 +35,9 @@ def _set_rng_state(state):
 
 
 class CheckpointManager:
+    """Saves and loads full training checkpoints in one folder, keeping the newest
+    `keep_last` files. Every save is atomic."""
+
     def __init__(self, directory, keep_last=2, mode="exact"):
         self.directory = directory
         self.keep_last = keep_last
@@ -66,6 +69,7 @@ class CheckpointManager:
         return final
 
     def latest(self):
+        """Path of the newest checkpoint in the folder, or None."""
         files = sorted(glob.glob(os.path.join(self.directory, "ckpt_step*.pt")))
         return files[-1] if files else None
 

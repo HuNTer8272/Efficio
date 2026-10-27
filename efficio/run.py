@@ -64,6 +64,18 @@ def _make_scaler(enabled):
 
 
 class Run:
+    """One training run: device and precision choice, data loading, checkpoints, the time
+    budget and the end-of-run report.
+
+    budget: e.g. "2h" or "90m"; the run saves and stops 10 minutes before it ends.
+    checkpoint_dir: where checkpoints go (default: a sensible folder per platform).
+    save_every_minutes: periodic checkpoint interval.
+    grad_accum_steps: micro-batches per optimizer step.
+    resume: continue from the latest checkpoint in checkpoint_dir if there is one.
+    optimize_data: tune DataLoaders passed to loop() (workers, pinned memory, prefetching).
+    channels_last: "auto", True or False; channels_last memory format for conv models on GPU.
+    """
+
     def __init__(self, budget=None, checkpoint_dir=None, save_every_minutes=15,
                  grad_accum_steps=1, resume=True, verbose=True,
                  optimize_data=True, channels_last="auto"):
@@ -103,6 +115,8 @@ class Run:
 
     # ---------- setup ----------
     def prepare(self, model, optimizer, scheduler=None):
+        """Move the model to the device, apply channels_last if chosen and resume from the
+        latest checkpoint. Returns (model, optimizer)."""
         self.model = model.to(self.device)
         self.optimizer, self.scheduler = optimizer, scheduler
         use, reason = use_channels_last(self.channels_last_setting, self.hw.device, self.model)
@@ -127,6 +141,7 @@ class Run:
 
     @contextlib.contextmanager
     def autocast(self):
+        """Mixed precision context for the forward pass: fp16 or bf16 on GPU, no-op on CPU."""
         if self.hw.precision == "fp32":
             yield
             return
@@ -245,6 +260,7 @@ class Run:
             self.optimizations.append(text)
 
     def backward(self, loss):
+        """Backward pass with gradient scaling (fp16) and gradient accumulation."""
         self.scaler.scale(loss / self.state.grad_accum_steps).backward()
 
     def clip_grad_norm(self, max_norm, norm_type=2.0):
@@ -259,6 +275,8 @@ class Run:
         return torch.nn.utils.clip_grad_norm_(params, max_norm, norm_type)
 
     def step(self):
+        """Optimizer and scheduler step once enough micro-batches have accumulated; also
+        saves periodically and stops when the time budget runs low."""
         self._micro += 1
         if self._micro < self.state.grad_accum_steps:
             return
@@ -273,6 +291,7 @@ class Run:
 
     # ---------- checkpointing and budget ----------
     def save(self):
+        """Save a checkpoint now. Returns its path."""
         extra = {"shuffle_seed": self._shuffle_seed} if self._shuffle_seed is not None else None
         path = self.ckpt.save(self.state, self.model, self.optimizer, self.scheduler, self.scaler,
                               extra=extra)
@@ -315,10 +334,12 @@ class Run:
 
     @property
     def should_stop(self):
+        """True when the run stopped early (time budget or shutdown signal)."""
         return self._stop_reason is not None and self._stop_reason != "finished"
 
     # ---------- reporting ----------
     def report(self):
+        """Print the end-of-run report: progress, time split, GPU use and tips."""
         mins = self.budget.elapsed() / 60
         lines = [
             "[efficio] ---- run report ----",

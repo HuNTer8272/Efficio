@@ -1,5 +1,5 @@
 """Track where training time goes: setup, waiting for data, and the training steps themselves.
-Also samples GPU utilization with nvidia-smi. Phase 2 (Person B).
+Also samples GPU utilization with nvidia-smi.
 
 This module must not import torch, so TensorFlow/Keras support can reuse it.
 Run passes it plain numbers (seconds).
@@ -28,38 +28,46 @@ class Profiler:
         self.steps = 0
 
     def first_batch(self, now=None):
+        """Mark the arrival of the first trained batch (end of setup)."""
         if self.first_batch_at is None:
             self.first_batch_at = self.clock() if now is None else now
 
     def add_step(self, data_wait_s, step_s):
+        """Record one training step: seconds waiting for data, seconds in the step."""
         self.data_wait_s += data_wait_s
         self.step_s += step_s
         self.steps += 1
 
     def finish(self, now=None):
+        """Mark the end of the training loop."""
         self.finished_at = self.clock() if now is None else now
 
     @property
     def setup_s(self):
+        """Seconds from creation to the first trained batch."""
         end = self.first_batch_at if self.first_batch_at is not None else self._now()
         return end - self.created_at
 
     @property
     def train_s(self):
+        """Seconds from the first trained batch to the end of the loop."""
         if self.first_batch_at is None:
             return 0.0
         return self._now() - self.first_batch_at
 
     @property
     def total_s(self):
+        """Setup plus training time in seconds."""
         return self.setup_s + self.train_s
 
     @property
     def data_wait_pct(self):
+        """Share of training time spent waiting for data, in %."""
         return 100.0 * self.data_wait_s / self.train_s if self.train_s > 0 else 0.0
 
     @property
     def setup_pct(self):
+        """Share of the total time spent on setup, in %."""
         return 100.0 * self.setup_s / self.total_s if self.total_s > 0 else 0.0
 
     def _now(self):
@@ -80,6 +88,7 @@ class GpuUtilSampler:
         self._thread = None
 
     def start(self):
+        """Start sampling in a background thread (no-op without nvidia-smi)."""
         if not self.available:
             return
         self._stop.clear()
@@ -88,6 +97,7 @@ class GpuUtilSampler:
             self._thread.start()
 
     def stop(self):
+        """Stop sampling; waits at most 1 s for the thread."""
         self._stop.set()
         if self._thread is not None:
             # Short wait only: a slow nvidia-smi call must not hold up the end of training
@@ -107,17 +117,17 @@ class GpuUtilSampler:
 
     @property
     def average(self):
+        """Average utilization in %, or None if nothing was sampled."""
         return sum(self.samples) / len(self.samples) if self.samples else None
 
 
 GPU_LOADER_EXAMPLE = (
-    "from efficio import GPULoader\n"
-    "from efficio.speed import gpu_augment as A\n"
+    "from efficio import GPULoader, gpu_augment as A\n"
     "loader = GPULoader.from_torchvision(train_set, batch_size=128, transform=A.Compose(\n"
     "    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))")
 
 IMAGE_CACHE_EXAMPLE = (
-    "from efficio.data import ImageCache, CachedImageDataset\n"
+    "from efficio import ImageCache, CachedImageDataset\n"
     "ImageCache.build(paths, labels, \"cache/train\", size=(224, 224))   # once\n"
     "loader = DataLoader(CachedImageDataset(\"cache/train\"), batch_size=64, shuffle=True)\n"
     "for x, y in run.loop(loader, epochs, gpu_transform=efficio.on_inputs(augment)): ...")

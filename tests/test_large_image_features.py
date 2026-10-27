@@ -3,12 +3,12 @@
 import pytest
 
 torch = pytest.importorskip("torch")
-from torch import nn                                                     # noqa: E402
-from torch.utils.data import DataLoader, TensorDataset                   # noqa: E402
+from torch import nn  # noqa: E402
+from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
-import efficio                                                           # noqa: E402
-from efficio.interfaces import HardwareInfo                              # noqa: E402
-from efficio.speed import gpu_augment as A                               # noqa: E402
+import efficio  # noqa: E402
+from efficio.interfaces import HardwareInfo  # noqa: E402
+from efficio.speed import gpu_augment as A  # noqa: E402
 
 CPU = HardwareInfo("local", "cpu")
 
@@ -246,6 +246,7 @@ def test_detects_datasets_that_decode_image_files(tmp_path):
     assert not _decodes_image_files(None)
     PIL = pytest.importorskip("PIL.Image")
     import numpy as np
+
     from efficio.data import CachedImageDataset, ImageCache
     PIL.fromarray(np.zeros((4, 4, 3), np.uint8)).save(tmp_path / "a.png")
     ImageCache.build([tmp_path / "a.png"], [0], tmp_path / "c", size=4, workers=0, verbose=False)

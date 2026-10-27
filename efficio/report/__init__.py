@@ -1,1 +1,1 @@
-"""Profiling and reporting (Person B)."""
+"""Profiling and the end-of-run report."""

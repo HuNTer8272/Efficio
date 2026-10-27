@@ -1,0 +1,9 @@
+# The source distribution holds only the efficio package plus the files needed to build it.
+include LICENSE README.md pyproject.toml
+graft efficio
+prune tests
+prune benchmarks
+prune examples
+prune data
+global-exclude *.py[cod] __pycache__ *.ipynb_checkpoints
+prune .github

@@ -1,117 +1,75 @@
 # Efficio
 
-**Efficio - Get more training out of every GPU hour.**
+**Get more training out of every GPU hour on Colab, Kaggle and your own GPU.** Efficio is a small PyTorch library that picks the right mixed precision, keeps the GPU fed with data, stops cleanly before your time runs out and resumes exactly where it stopped.
 
-Free GPUs on Colab and Kaggle come with strict time limits, and much of that time is wasted: idle sessions, slow data loading, full-precision math, and runs that are lost when a session dies. Efficio helps you waste less of it. It is a Python library you add to your training code with a few lines. PyTorch is supported today, with TensorFlow/Keras planned.
+```bash
+pip install efficio
+```
+
+## Quick start on Colab
+
+```python
+!pip install -q efficio
+import efficio, torch
+
+run = efficio.Run(budget="2h")                        # save and stop 10 minutes before 2 h
+model, optimizer = run.prepare(model, optimizer)      # resumes from the last checkpoint
+for x, y in run.loop(train_loader, epochs=20):        # batches arrive on the GPU
+    with run.autocast():                              # fp16 on a T4, bf16 on newer GPUs
+        loss = torch.nn.functional.cross_entropy(model(x), y)
+    run.backward(loss)
+    run.step()
+run.report()                                          # time split, GPU use and tips
+```
+
+Run the same cell again after a disconnect or in a new session and training continues from the last checkpoint. A complete CIFAR-10 example is in the [Colab quick-start notebook](https://github.com/HuNTer8272/Efficio/blob/main/examples/colab_quickstart.ipynb).
 
 ## What it does for you
 
-**On Colab and Kaggle**
+Free GPUs on Colab and Kaggle have strict time limits, and much of that time is wasted: slow data loading, full-precision math and runs lost when a session dies.
 
-- Faster training, so each session gets more work done.
-- Less wasted quota, so your limit lasts longer.
-- Progress saved before the limit hits, so you can continue when the limit resets or on the other platform.
-
-**On your own GPU**
-
-- Faster training.
-- Crash safety: your progress survives power cuts, restarts and out-of-memory crashes.
-- Help with small-memory GPUs.
-
-Local GPUs have no quota, so there the benefit is speed and safety, not extra time.
+- **On Colab and Kaggle:** faster training, less wasted quota, and progress saved before the limit hits, so you can continue after the reset or on the other platform.
+- **On your own GPU:** faster training and crash safety (power cuts, restarts, out-of-memory crashes). Local GPUs have no quota, so there the benefit is speed and safety, not extra time.
 
 ## Features
 
-Each item is marked **Available** (in the library and verified on a GPU), **Available, needs GPU verification** (in the library and tested on CPU, not yet verified on a GPU) or **Planned** (on the roadmap).
-
 ### Speed
 
-| Feature | Status |
-|---|---|
-| GPU-aware precision: fp16 on T4, bf16 on newer GPUs | Available |
-| Automatic DataLoader tuning: more workers, pinned memory, persistent workers, prefetching | Available |
-| channels_last memory format for convolutional models | Available |
-| GPU data pipeline for small datasets (GPULoader) | Available |
-| Auto batch size with out-of-memory recovery | Planned |
-| Image cache for large image datasets: decode and resize once, parallel file reads, resumable build, reusable across sessions (ImageCache) | Available |
-| GPU augmentation for any DataLoader (`run.loop(..., gpu_transform=...)`, crop, resized crop, affine, flip, brightness/contrast) | Available |
-| Preprocessing cache for non-image data | Planned |
-| Use both Kaggle T4 GPUs | Planned |
+- **GPU-aware mixed precision:** fp16 with gradient scaling on a T4 and older GPUs, bf16 on Ampere and newer, fp32 on CPU (`run.autocast()`).
+- **Automatic DataLoader tuning:** more workers, pinned memory, persistent workers and prefetching, applied by `run.loop()` on Linux (Colab, Kaggle).
+- **channels_last** memory format for convolutional models on the GPU, plus `cudnn.benchmark`.
+- **GPULoader:** keeps a small dataset (CIFAR, MNIST, FashionMNIST) on the GPU and builds and augments batches there, with no CPU work per batch.
+- **ImageCache:** decodes and resizes a large image dataset once, using all CPU cores and parallel file reads, into one uint8 array that later sessions reuse. The build is resumable.
+- **GPU augmentation** for any DataLoader: crop, resized crop, affine, flip, brightness and contrast, normalize (`efficio.gpu_augment`, used through `run.loop(..., gpu_transform=...)`).
 
-### Quota stretching
+### Time budget and checkpoints
 
-| Feature | Status |
-|---|---|
-| Stop cleanly before the time budget runs out | Available |
-| CPU pre-flight check | Planned |
-| Budget planner that fits epochs to your time | Planned |
-| Auto-shutdown when training ends | Planned |
-| Cheaper validation during training | Planned |
-
-### Smart checkpointing
-
-| Feature | Status |
-|---|---|
-| Saves model, optimizer, scheduler, gradient scaler, RNG state and exact position | Available |
-| Atomic saves, so a crash mid-save never corrupts the last checkpoint | Available |
-| Periodic and emergency saves | Available |
-| Exact mid-epoch resume: same step count, and the same data order with GPULoader or unshuffled data | Available |
-| Same data order after resume with a shuffled DataLoader (per-epoch seeded shuffle) | Available, needs GPU verification |
-| Light checkpoint mode, about 3x smaller | Planned |
-
-### Works everywhere
-
-| Feature | Status |
-|---|---|
-| Detects Colab, Kaggle or local | Available |
-| Plain PyTorch support | Available |
-| Gradient clipping that works with fp16 and gradient accumulation (`run.clip_grad_norm`) | Available, needs GPU verification |
-| Validation helper: eval mode, no gradients, mixed precision (`run.evaluate_mode`) | Available |
-| Hugging Face Hub and Google Drive storage for moving runs between platforms | Planned |
-| Hugging Face Trainer and PyTorch Lightning support | Planned |
-| TensorFlow / Keras support (Keras callback for model.fit) | Planned |
+- **Budget stop:** `Run(budget="2h")` saves and stops before the time runs out. A shutdown signal (SIGTERM) also triggers a save.
+- **Full checkpoints:** model, optimizer, scheduler, gradient scaler, RNG states and the exact position in the epoch.
+- **Atomic saves**, so a crash in the middle of a save never corrupts the last good checkpoint. Periodic and emergency saves.
+- **Exact mid-epoch resume:** the same step count, and the same data order with GPULoader or unshuffled data.
+- **Gradient accumulation** (`Run(grad_accum_steps=...)`) and a validation helper (`run.evaluate_mode()`: eval mode, no gradients, mixed precision).
 
 ### Visibility
 
-| Feature | Status |
-|---|---|
-| Basic end-of-run report | Available |
-| Profiler: data-wait time and GPU utilization | Available |
-| Improved report: setup vs training time, data-wait, GPU utilization, applied optimizations and tips | Available |
-| Report tip for image datasets decoded from files every epoch (suggests ImageCache) | Available, needs GPU verification |
-| Detailed report with GPU usage, time breakdown, wasted quota and tips | Planned |
-| Telegram and email notifications | Planned |
+- **End-of-run report:** setup vs training time, time spent waiting for data, average GPU utilization, GPU minutes used, the optimizations applied, and plain-language tips (for example: use GPULoader, use ImageCache, or try a larger batch).
 
-## Quick start
+### Available, needs GPU verification
 
-```python
-import efficio
+These work and are covered by CPU tests, but haven't been confirmed on a GPU yet:
 
-run = efficio.Run(budget="2h")            # stop and save 10 minutes before the budget ends
-model, optimizer = run.prepare(model, optimizer)   # resumes automatically if a checkpoint exists
+- **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
+- **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
+- **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
 
-for batch in run.loop(loader, epochs=20):
-    with run.autocast():                  # fp16 on T4, bf16 on newer GPUs, fp32 on CPU
-        loss = compute_loss(model, batch)
-    run.backward(loss)
-    run.clip_grad_norm(1.0)               # optional: real gradient units, also with fp16
-    run.step()
+The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
-with run.evaluate_mode():                 # eval mode, no gradients, mixed precision
-    val_loss = compute_loss(model, val_batch)
-
-run.report()
-```
-
-`run.clip_grad_norm(max_norm)` goes between `backward` and `step`. With fp16 it unscales the gradients first, so `max_norm` means the same as without mixed precision, and with gradient accumulation it only clips on the micro-batch where the optimizer steps.
+## Usage
 
 ### Keep a small dataset on the GPU
 
-On Colab the GPU often waits for 2 CPU cores to augment images. If your dataset fits in GPU memory (CIFAR, MNIST, FashionMNIST), `GPULoader` keeps it on the GPU and does the augmentation there, so no CPU work is done per batch. Use it in place of the DataLoader:
-
 ```python
-from efficio import GPULoader
-from efficio.speed import gpu_augment as A
+from efficio import GPULoader, gpu_augment as A
 
 loader = GPULoader.from_torchvision(train_set, batch_size=128, shuffle=True, transform=A.Compose(
     [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))
@@ -119,85 +77,52 @@ for x, y in run.loop(loader, epochs=20):
     ...
 ```
 
-`from_torchvision` reads `train_set.data` and `train_set.targets` and ignores the dataset's own CPU transform, so pass the GPU version as `transform`. For other data, use `GPULoader.from_tensors(x, y, batch_size)`. GPULoader refuses datasets that would need more than 30% of free GPU memory; use a normal DataLoader for those. The shuffle order depends only on `seed` and the epoch, so a resumed run continues with exactly the same batches.
+`from_torchvision` reads `train_set.data` and `train_set.targets` and ignores the dataset's own CPU transform, so pass the GPU version as `transform`. For other data use `GPULoader.from_tensors(x, y, batch_size)`. GPULoader refuses datasets that would need more than 30% of free GPU memory; use a normal DataLoader for those.
 
 ### Large image datasets
-
-Datasets of image files that don't fit in GPU memory (for example 100k PNG X-rays) are usually limited by the CPU decoding and resizing every image in every epoch. On Colab that is 2 cores. Efficio splits the work:
-
-1. `ImageCache.build` decodes and resizes every image **once**, using all CPU cores, into one uint8 array file. The build is resumable: if the session ends, running it again continues where it stopped. Once finished, it returns immediately.
-2. `CachedImageDataset` reads samples from that file as uint8 tensors. No decoding at training time, and it works with a normal DataLoader.
-3. Conversion to float, augmentation and normalization run on the GPU through `gpu_transform`.
 
 ```python
 from torch.utils.data import DataLoader
 import efficio
-from efficio.data import ImageCache, CachedImageDataset
-from efficio.speed import gpu_augment as A
+from efficio import CachedImageDataset, ImageCache, gpu_augment as A
 
 ImageCache.build(paths, labels, "/content/cache/train", size=(224, 224), grayscale=True)
 loader = DataLoader(CachedImageDataset("/content/cache/train"), batch_size=64, shuffle=True,
                     num_workers=2)
 augment = A.Compose([A.ToFloat(), A.RepeatChannels(3), A.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                     A.RandomAffine(degrees=7, translate=(0.05, 0.05)), A.RandomHorizontalFlip(),
-                     A.Normalize(mean, std)])
+                     A.RandomHorizontalFlip(), A.Normalize(mean, std)])
 for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)):
     ...
 ```
 
-`labels` can be class ids (one per image) or a multi-hot array (one 0/1 column per label). The cache size is printed when the build finishes.
+`labels` can be class ids or a multi-hot array. Building the cache needs no GPU: to save GPU quota, build it in a CPU-only session, keep the folder (Google Drive on Colab; notebook output or a private dataset on Kaggle) and train in a GPU session. With `workers > 1` on Windows or macOS, call `ImageCache.build` under `if __name__ == "__main__":`.
 
-Reading and decoding overlap: `io_threads` threads (default 32) read file bytes ahead while worker processes decode them, with at most `4 x io_threads` files held in memory. This matters on network-backed storage such as Kaggle's `/kaggle/input`, where each file read has high latency: reading one file at a time measured 2.5 files/s on NIH Chest X-rays, against 71.5 files/s with 32 parallel reads. With the overlapped reads, the cache build on cold NIH files ran at 139 images/s with `io_threads=32` and 148 images/s with 64, close to what 4 CPU cores can decode; before parallel reads it ran at 2 images/s. The progress line shows the overall images/s plus read files/s and decode capacity; if reads stay far below decoding, it suggests a higher `io_threads` (for example 64).
+### Gradient clipping and validation
 
-Building the cache doesn't need a GPU. To save GPU quota, build it once in a CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: Google Drive), then train in a GPU session. Efficio prints this note when it builds a cache on Colab or Kaggle with a GPU attached. Keep the cache for later sessions: on Colab copy the finished folder to Google Drive, on Kaggle save it as notebook output or a private dataset. Efficio never uploads anything by itself. `examples/large_image_dataset.py` shows the whole flow (image folder + CSV, pretrained model, multi-label loss, clipping, validation, budget and resume); run it with `--fake` to try it on CPU.
+```python
+run.backward(loss)
+run.clip_grad_norm(1.0)          # between backward and step; real units, also with fp16
+run.step()
 
-### Try the example
-
-`examples/quickstart.py` trains a small model on random data. It runs on CPU, Colab or Kaggle.
-
-```bash
-python examples/quickstart.py --budget 20s   # stops early and saves a checkpoint
-python examples/quickstart.py                # resumes from where the first run stopped
+with run.evaluate_mode():        # eval mode, no gradients, mixed precision
+    val_loss = loss_fn(model(x_val), y_val)
 ```
 
-## Tested on
+## Results
 
-Phase 1 has been verified on:
-
-| Platform | GPU | Precision |
-|---|---|---|
-| Colab | 1x Tesla T4 | fp16 |
-| Kaggle | 2x Tesla T4 | fp16 |
-
-On both platforms we checked environment detection, mixed precision, budget stop and exact resume. After resuming mid-epoch, both platforms ended at the identical step count.
-
-Note: on Kaggle, Efficio currently trains on one of the two GPUs.
-
-The Phase 2 speed and visibility features (DataLoader tuning, channels_last, GPULoader, profiler and the improved report) have been verified on Colab (1x Tesla T4) and Kaggle (2x Tesla T4, one used), both in fp16. We checked the tests, budget stop and resume, and the ResNet-18 benchmark below on both platforms, plus GPULoader resume and the SIGTERM save on Colab.
-
-The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4, fp16, channels_last) with real NIH Chest X-ray PNGs: cache build and reuse, training, and a budget stop with resume that ended at the expected step. They have not been run on Colab yet. `clip_grad_norm` has run on a Kaggle T4 without errors, but its values with the fp16 scaler on CUDA are only checked by the CPU tests so far.
-
-## Measuring results
-
-We will benchmark three workloads, each with and without Efficio:
-
-- ResNet-18 on CIFAR-10
-- A DistilBERT fine-tune
-- A small LoRA run
-
-We report epochs per quota hour. The numbers below are single 5-epoch runs; before the release they will be averaged over 3 runs.
+These are single runs on free notebook GPUs, so read them as examples, not guarantees: speedups depend on the model, the data pipeline and how many CPU cores you get. The baselines are plain PyTorch in fp32 without any Efficio feature. Epoch-time averages leave out the first (warm-up) epoch. The raw results are in [`benchmarks/results/`](https://github.com/HuNTer8272/Efficio/tree/main/benchmarks/results) and the scripts in [`benchmarks/`](https://github.com/HuNTer8272/Efficio/tree/main/benchmarks).
 
 ### ResNet-18 on CIFAR-10, Colab, 1x Tesla T4
 
-5 epochs, batch size 128. Averages exclude the first (warm-up) epoch. Raw results are in `benchmarks/results/`.
+5 epochs, batch size 128.
 
 | Run | Avg epoch | Epochs per hour | GPU utilization | Test accuracy | Speedup |
 |---|---|---|---|---|---|
 | Plain PyTorch (fp32) | 47.6 s | 75.6 | 98% | 85.37% | 1.00x |
 | Efficio (fp16, DataLoader tuning, channels_last) | 20.7 s | 173.6 | 54% | 85.57% | 2.30x |
-| Efficio + GPULoader (`--gpu-data`) | 13.3 s | 270.4 | 96% | 85.59% | 3.58x |
+| Efficio + GPULoader | 13.3 s | 270.4 | 96% | 85.59% | 3.58x |
 
-With the normal DataLoader, the GPU waited for Colab's 2 CPU cores to augment images (22% data-wait). GPULoader keeps the data and augmentation on the GPU and brings utilization back to 96%.
+With the normal DataLoader the GPU waited for Colab's 2 CPU cores to augment images (22% data-wait). GPULoader keeps the data and augmentation on the GPU.
 
 ### ResNet-18 on CIFAR-10, Kaggle, Tesla T4 (one of the two GPUs)
 
@@ -207,45 +132,55 @@ Same settings as on Colab.
 |---|---|---|---|---|---|
 | Plain PyTorch (fp32) | 44.8 s | 80.3 | 98% | 85.98% | 1.00x |
 | Efficio (fp16, DataLoader tuning, channels_last) | 14.7 s | 244.3 | 89% | 85.55% | 3.04x |
-| Efficio + GPULoader (`--gpu-data`) | 14.7 s | 244.3 | 91% | 85.52% | 3.04x |
+| Efficio + GPULoader | 14.7 s | 244.3 | 91% | 85.52% | 3.04x |
 
-Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the GPU busy (2% data-wait) and GPULoader adds no speed there. GPULoader helps when the CPU is the bottleneck, as on Colab. The report only suggests it in that case.
+Kaggle gives the notebook 4 CPU cores, so the tuned DataLoader already keeps the GPU busy (2% data-wait) and GPULoader adds no speed there.
 
 ### Large images from disk: NIH Chest X-rays, Kaggle, Tesla T4
 
-5,000 randomly sampled 1024x1024 PNGs read from `/kaggle/input` (4,500 train / 500 validation), 14 findings as a multi-label target, ResNet-18 at 224x224, batch size 64, 4 epochs. The baseline decodes, resizes and augments every PNG on the CPU in each epoch; Efficio builds an ImageCache once and augments on the GPU (`benchmarks/image_folder_*.py`).
+5,000 randomly sampled 1024x1024 PNGs from `/kaggle/input` (4,500 train / 500 validation), 14 findings as a multi-label target, ResNet-18 at 224x224, batch size 64, 4 epochs. The baseline decodes, resizes and augments every PNG on the CPU in each epoch with 4 DataLoader workers; Efficio builds an ImageCache once and augments on the GPU. Both ran in the same Kaggle session.
 
-**Headline comparison (same Kaggle session):** with the CPU pipeline tuned to use all 4 cores, the baseline trained at 103.0 epochs per hour and Efficio at 625.6, so Efficio was **6.07x faster per epoch** in this setup.
-
-| Run (same session) | Avg epoch | Epochs per hour | GPU utilization | Data-wait | Validation AUROC |
+| Run | Avg epoch | Epochs per hour | GPU utilization | Data-wait | Validation AUROC |
 |---|---|---|---|---|---|
-| Plain PyTorch (fp32, CPU decoding, 4 DataLoader workers) | 34.9 s | 103.0 | 37% | 74% | 0.615 |
+| Plain PyTorch (fp32, CPU decoding, 4 workers) | 34.9 s | 103.0 | 37% | 74% | 0.615 |
 | Efficio (fp16, ImageCache + GPU augmentation) | 5.8 s | 625.6 | 78% | 0.3% | 0.673 |
 
-An earlier session also measured the baseline with 2 workers: 54.7 s per epoch (65.9 epochs per hour, 24% GPU utilization, 88% data-wait, AUROC 0.670), against 5.1 s per epoch for Efficio in that session. Efficio's epoch time varied by about 10-15% between sessions (5.1 to 5.8 s), so compare runs from the same session.
+Building the cache took about 36 s on cold files (139 images/s); later runs reuse it. Caveats:
 
-Building the cache took about 36 s for all 5,000 images on cold files (139 images/s); later runs reuse it in 0 s. Even with 4 workers, the baseline spends 74% of its time waiting for the CPU to decode PNGs. Read these numbers with their limits:
+- **Warm file cache:** the baseline ran after the cache build, so the PNGs were already in RAM, which makes its file reads faster than on a cold start.
+- **Single runs:** each row is one 4-epoch run. Efficio's epoch time varied by about 10-15% between sessions (5.1 to 5.8 s).
+- **AUROC, not accuracy:** most labels are 0, so per-label accuracy is about 95% for every run. Across the NIH runs, AUROC ranged from 0.615 to 0.673 for both pipelines, so 4 epochs on 4,500 images can't show an accuracy difference either way.
 
-- **Warm file cache:** the baseline ran after the cache build, so the PNGs were already in RAM. That makes its file reads faster than on a cold start.
-- **Single runs:** each row is one 4-epoch run. The numbers will be averaged over 3 runs before the release.
-- **Accuracy:** compare AUROC, not label accuracy (most labels are 0, so per-label accuracy is about 95% for every run). Across the NIH runs so far, AUROC ranged from 0.615 to 0.673 for both pipelines, so 4 epochs on 4,500 images can't show an accuracy difference either way; that needs longer runs.
+## Works with
+
+- PyTorch 2.0 or newer, Python 3.10 or newer
+- Google Colab and Kaggle notebooks
+- A local NVIDIA GPU, or CPU (for development and testing)
+
+## Known limitations
+
+- **PyTorch only.** TensorFlow/Keras support is planned.
+- **Single GPU.** On Kaggle's 2x T4 machines, Efficio trains on one GPU.
+- **GPULoader** needs a dataset with `.data` and `.targets` (`from_torchvision`), or tensors passed to `GPULoader.from_tensors`.
+- **Windows and macOS:** Efficio doesn't add DataLoader workers automatically there, because worker processes need a picklable dataset and an `if __name__ == "__main__":` guard. Set `num_workers` yourself to use them.
 
 ## Roadmap
 
-- **Phase 1:** done and verified.
-- **Phase 2:** in progress.
-  - Done so far: profiler, DataLoader tuning, channels_last, GPULoader, improved report.
-  - Image cache, GPU augmentation for any DataLoader and the evaluation helper: verified on Kaggle (Colab still to run). Gradient clipping: needs GPU verification.
-  - Remaining: data cache for non-image data, light checkpoints, Hugging Face Hub storage, auto batch size, pre-flight check.
-- **Phase 3:** Google Drive storage, auto-shutdown, budget planner, full report.
-- **Phase 4:** multi-GPU, notifications, Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support.
-- **Phase 5:** benchmarks, docs, PyPI release.
+Planned for future releases:
 
-## Development
+- Light checkpoints (about 3x smaller)
+- Hugging Face Hub and Google Drive storage for moving runs between platforms
+- Automatic batch size with out-of-memory recovery
+- A CPU pre-flight check, a budget planner and auto-shutdown when training ends
+- Both Kaggle T4 GPUs
+- Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support
+- Telegram and email notifications
+- More benchmarks: a DistilBERT fine-tune and a small LoRA run
 
-```bash
-pip install -e ".[dev]"
-pytest
-```
+## Contributing
 
-`efficio/interfaces.py` holds the shared data objects. Only change it when both teammates agree, and make the change together.
+See [CONTRIBUTING.md](https://github.com/HuNTer8272/Efficio/blob/main/CONTRIBUTING.md) for the development setup, tests and pull request rules. Changes are listed in the [changelog](https://github.com/HuNTer8272/Efficio/blob/main/CHANGELOG.md).
+
+## License
+
+MIT. See [LICENSE](https://github.com/HuNTer8272/Efficio/blob/main/LICENSE).

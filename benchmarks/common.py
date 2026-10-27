@@ -95,7 +95,8 @@ def make_loaders(batch_size=128, num_workers=2, data_dir="./data"):
     ])
     test_tf = T.Compose([T.ToTensor(), T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD)])
     prepare_cifar10(data_dir)
-    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=True, transform=train_tf)
+    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=True,
+                                             transform=train_tf)
     test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=True, transform=test_tf)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True,
                                                drop_last=True, num_workers=num_workers)

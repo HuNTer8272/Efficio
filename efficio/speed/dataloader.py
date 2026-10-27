@@ -1,4 +1,4 @@
-"""Rebuild a DataLoader so the GPU waits less for data. Phase 2 (Person B)."""
+"""Rebuild a DataLoader so the GPU waits less for data."""
 
 import multiprocessing
 import os

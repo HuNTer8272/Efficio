@@ -1,4 +1,4 @@
-"""Batched image augmentation that runs on the GPU. Phase 2 (Person B).
+"""Batched image augmentation that runs on the GPU.
 
 Every function takes a batch shaped (N, C, H, W) on any device and draws its randomness
 per sample from the global torch RNG of that device. That RNG is saved in Efficio
@@ -173,6 +173,8 @@ class Compose:
 
 
 class RandomCrop:
+    """Class form of random_crop."""
+
     def __init__(self, size, padding=0):
         self.size, self.padding = size, padding
 
@@ -181,6 +183,8 @@ class RandomCrop:
 
 
 class RandomHorizontalFlip:
+    """Class form of random_horizontal_flip."""
+
     def __init__(self, p=0.5):
         self.p = p
 
@@ -189,6 +193,8 @@ class RandomHorizontalFlip:
 
 
 class Normalize:
+    """Class form of normalize."""
+
     def __init__(self, mean, std):
         self.mean, self.std = mean, std
 
@@ -197,11 +203,15 @@ class Normalize:
 
 
 class ToFloat:
+    """Class form of to_float."""
+
     def __call__(self, x):
         return to_float(x)
 
 
 class RepeatChannels:
+    """Class form of repeat_channels."""
+
     def __init__(self, n=3):
         self.n = n
 
@@ -210,6 +220,8 @@ class RepeatChannels:
 
 
 class Resize:
+    """Class form of resize."""
+
     def __init__(self, size, antialias=True):
         self.size, self.antialias = size, antialias
 
@@ -218,6 +230,8 @@ class Resize:
 
 
 class RandomResizedCrop:
+    """Class form of random_resized_crop."""
+
     def __init__(self, size, scale=(0.08, 1.0), ratio=(3 / 4, 4 / 3)):
         self.size, self.scale, self.ratio = size, scale, ratio
 
@@ -226,6 +240,8 @@ class RandomResizedCrop:
 
 
 class RandomAffine:
+    """Class form of random_affine."""
+
     def __init__(self, degrees=10.0, translate=(0.0, 0.0), scale=(1.0, 1.0)):
         self.degrees, self.translate, self.scale = degrees, translate, scale
 
@@ -234,6 +250,8 @@ class RandomAffine:
 
 
 class RandomBrightnessContrast:
+    """Class form of random_brightness_contrast."""
+
     def __init__(self, brightness=0.2, contrast=0.2):
         self.brightness, self.contrast = brightness, contrast
 

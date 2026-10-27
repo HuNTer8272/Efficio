@@ -1,4 +1,4 @@
-"""channels_last memory format for convolutional models on the GPU. Phase 2 (Person B).
+"""channels_last memory format for convolutional models on the GPU.
 
 Tensor cores on T4 and newer GPUs run convolutions faster when images are stored
 as NHWC (channels_last) instead of NCHW.
@@ -8,6 +8,7 @@ from torch import nn
 
 
 def has_conv2d(model):
+    """True if the model contains any nn.Conv2d layer."""
     return any(isinstance(m, nn.Conv2d) for m in model.modules())
 
 

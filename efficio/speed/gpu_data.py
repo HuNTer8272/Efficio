@@ -1,4 +1,4 @@
-"""Keep a small dataset on the GPU and build batches there. Phase 2 (Person B).
+"""Keep a small dataset on the GPU and build batches there.
 
 On Colab and Kaggle the GPU often waits for 2-4 CPU cores to decode and augment images.
 For datasets that fit in GPU memory (CIFAR, MNIST, FashionMNIST) GPULoader stores the

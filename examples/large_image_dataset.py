@@ -30,8 +30,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 import efficio
-from efficio.data import CachedImageDataset, ImageCache
-from efficio.speed import gpu_augment as A
+from efficio import CachedImageDataset, ImageCache
+from efficio import gpu_augment as A
 
 IMAGENET_MEAN, IMAGENET_STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 

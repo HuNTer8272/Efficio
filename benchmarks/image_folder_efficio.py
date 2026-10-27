@@ -20,10 +20,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 import efficio
-import image_common as ic
-from common import GpuUtilSampler, save_results, sync
 from efficio.data import CachedImageDataset, ImageCache
 from efficio.speed import gpu_augment as A
+
+import image_common as ic
+from common import GpuUtilSampler, save_results, sync
 
 STOP_AFTER_EPOCHS = 2        # the budget runs out halfway through the epoch after these
 

@@ -1,4 +1,4 @@
-"""Decode and resize an image dataset once, then train from a fast uint8 array. Phase 2 (Person B).
+"""Decode and resize an image dataset once, then train from a fast uint8 array.
 
 On Colab and Kaggle, 2-4 CPU cores decoding and resizing PNG/JPEG files cannot keep a GPU
 busy. ImageCache.build does that work once, with a process pool, and stores the result as
@@ -144,6 +144,7 @@ class ImageCache:
 
     @property
     def size_on_disk(self):
+        """Bytes used by the cache files."""
         return sum(os.path.getsize(os.path.join(self.out_dir, f))
                    for f in (IMAGES_FILE, LABELS_FILE, META_FILE))
 
@@ -283,7 +284,7 @@ class ImageCache:
             if decoders is not None:
                 decoders.shutdown(wait=True, cancel_futures=True)
         progress.close()
-        del images
+        images = None                       # close the memory-mapped file
         _write_json(meta_path, {**meta, "complete": True})
         cache = cls(out_dir)
         cache.build_stats = progress.stats()
@@ -380,5 +381,6 @@ class CachedImageDataset:
 
     @property
     def labels(self):
+        """All labels as a (memory-mapped) numpy array."""
         self._open()
         return self._labels

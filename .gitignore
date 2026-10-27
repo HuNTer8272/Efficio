@@ -7,3 +7,7 @@ efficio_checkpoints/
 /data/
 image_cache/
 fake_images/
+
+# Build output
+build/
+dist/
