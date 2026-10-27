@@ -49,6 +49,10 @@ Free GPUs on Colab and Kaggle have strict time limits, and much of that time is 
 - **Atomic saves**, so a crash in the middle of a save never corrupts the last good checkpoint. Periodic and emergency saves.
 - **Exact mid-epoch resume:** the same step count, and the same data order with GPULoader or unshuffled data.
 - **Gradient accumulation** (`Run(grad_accum_steps=...)`) and a validation helper (`run.evaluate_mode()`: eval mode, no gradients, mixed precision).
+- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Verified on Colab T4. Not in a PyPI release yet.
+- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Not in a PyPI release yet.
+- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Not in a PyPI release yet.
+- Resume quality of the checkpoint modes was checked on the T4 against a noise baseline (an exact resume with tiny weight noise); see [Checkpoint options](#checkpoint-options).
 
 ### Visibility
 
@@ -61,9 +65,6 @@ These work and are covered by CPU tests, but haven't been confirmed on a GPU yet
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
 - **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
 - **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
-- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Not in a PyPI release yet.
-- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Not in a PyPI release yet.
-- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Not in a PyPI release yet.
 
 The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
@@ -130,7 +131,23 @@ Three checkpoint modes. Any mode can resume from a checkpoint written in any oth
 | `"light"` | full-precision weights, 8-bit optimizer state | about 2x smaller | weights exact; optimizer state approximate, a tiny effect on training | you want smaller files without rounding any weights |
 | `"smallest"` | fp16 weights, 8-bit optimizer state | about 3x smaller | weights rounded to fp16, a slight effect after resume | file size matters most (slow uploads, little disk space) |
 
-- **Light and smallest** compress large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. For Adam, `exp_avg_sq` is stored as its square root and `exp_avg` as its ratio to it, so the update direction after a resume matches the saved one within one quantization step. With SGD the saving is smaller (about 1.6x for light), because momentum is half of the checkpoint.
+Checkpoint sizes measured on a Colab T4 (`benchmarks/checkpoint_sizes.py`). These are results for these models, not a guarantee; the saving depends on the model and the optimizer.
+
+| Model | Optimizer | exact | light | smallest | trainable only |
+|---|---|---|---|---|---|
+| ResNet-18 (CIFAR stem) | SGD + momentum | 85.36 MB | 53.75 MB | 32.42 MB | - |
+| Small transformer encoder | AdamW | 59.69 MB | 30.26 MB | 20.32 MB | - |
+| Frozen ResNet-18 backbone + small head | AdamW | 44.23 MB | 43.47 MB | 21.90 MB | 1.61 MB |
+
+With a frozen backbone, the optimizer state only covers the head, so light saves little; trainable-only saving is what shrinks those checkpoints.
+
+Resume quality was checked on the same T4 with `benchmarks/verify_light_resume.py`: a ResNet-18 run stopped by the time budget mid-epoch and resumed with a fresh `Run`, 27 of 27 checks passed. Compared with an uninterrupted run:
+
+- **Exact:** bit-identical.
+- **Restored state:** in every mode the gradient scaler, scheduler and step count came back exactly, and none of the 11,173,962 second-moment values was zeroed or halved.
+- **Final loss gaps:** noise baseline (an exact resume with 1e-6 weight noise) 0.0005, light 0.0012, smallest 0.0001. Accuracy gap 0.0 points everywhere.
+
+- **Light and smallest** compress large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. For Adam, `exp_avg_sq` is stored as its square root and `exp_avg` as its ratio to it, so the update direction after a resume matches the saved one within one quantization step. With SGD the saving is smaller (1.6x for light in the table above), because momentum is half of the checkpoint.
 - **Smallest** also stores floating-point weights in fp16 and casts them back to their original dtype on load. Integer buffers are unchanged.
 - In both modes, the scheduler, gradient scaler, RNG states and position are saved exactly.
 - **`save_trainable_only="auto"`** (default) leaves frozen parameters (`requires_grad=False`) out of the checkpoint when the model has any, and saves a signature of them instead (names, shapes, dtypes and a checksum). On resume, the model must have the same frozen weights, so load the same pretrained model and freeze the same layers before `run.prepare()`. If they differ, Efficio raises an error instead of resuming. `True` and `False` force it on or off. Buffers such as BatchNorm statistics are always saved.
