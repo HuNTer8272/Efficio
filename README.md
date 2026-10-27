@@ -61,6 +61,9 @@ These work and are covered by CPU tests, but haven't been confirmed on a GPU yet
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
 - **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
 - **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
+- **Light checkpoints** (`Run(checkpoint_mode="light")`): fp16 weights and 8-bit optimizer state, about 3x smaller files for Adam-trained models. The resume is close but not bit-identical. Not in a PyPI release yet.
+- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Not in a PyPI release yet.
+- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Not in a PyPI release yet.
 
 The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
@@ -107,6 +110,24 @@ run.step()
 with run.evaluate_mode():        # eval mode, no gradients, mixed precision
     val_loss = loss_fn(model(x_val), y_val)
 ```
+
+### Checkpoint options
+
+```python
+run = efficio.Run(
+    budget="2h",
+    checkpoint_mode="exact",        # or "light": ~3x smaller, resume close but not bit-identical
+    save_trainable_only="auto",     # "auto": skip frozen parameters when some are frozen
+    async_save=True,                # periodic saves written in the background
+)
+```
+
+- **`checkpoint_mode="exact"`** (default) saves everything needed for a bit-identical resume.
+- **`checkpoint_mode="light"`** stores floating-point weights in fp16 (cast back to their original dtype on load; integer buffers are unchanged) and large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. The scheduler, gradient scaler, RNG states and position are saved exactly. A resumed run continues from nearly the same weights and optimizer state, so its loss curve stays close to an uninterrupted run but is not identical. Use it when disk space or upload time matters more than an exact resume.
+- **`save_trainable_only="auto"`** (default) leaves frozen parameters (`requires_grad=False`) out of the checkpoint when the model has any, and saves a signature of them instead (names, shapes, dtypes and a checksum). On resume, the model must have the same frozen weights, so load the same pretrained model and freeze the same layers before `run.prepare()`. If they differ, Efficio raises an error instead of resuming. `True` and `False` force it on or off. Buffers such as BatchNorm statistics are always saved.
+- **`async_save=True`** (default) copies the state to CPU memory at a periodic save and writes the file in a background thread, so training continues. Only one save runs at a time. Saves for the time budget, a shutdown signal and the end of training wait for any background save and then write synchronously. If a background save fails, the error is raised at the next `run.step()`. `run.save()` called by you waits until the file is written.
+
+Checkpoints written by Efficio 0.1.x still load and resume. The end-of-run report shows the checkpoint mode, the size of the last file and how much save time was hidden by background saving.
 
 ## Results
 
@@ -168,7 +189,6 @@ Building the cache took about 36 s on cold files (139 images/s); later runs reus
 
 Planned for future releases:
 
-- Light checkpoints (about 3x smaller)
 - Hugging Face Hub and Google Drive storage for moving runs between platforms
 - Automatic batch size with out-of-memory recovery
 - A CPU pre-flight check, a budget planner and auto-shutdown when training ends

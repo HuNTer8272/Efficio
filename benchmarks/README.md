@@ -80,6 +80,22 @@ python benchmarks/compare.py
 
 Results are saved as `imagefolder-baseline` and `imagefolder-efficio` with `"benchmark": "image-folder"`, and `compare.py` computes speedups per benchmark. The fake labels are random, so accuracy and AUROC on `--fake` data only confirm that training runs; compare speed there, not accuracy. `test_acc_pct` is the mean per-label accuracy at threshold 0.5, and `val_auroc` is the mean ROC AUC.
 
+## Checkpoint sizes and save time
+
+`checkpoint_sizes.py` compares exact, light and trainable-only checkpoints for three setups: ResNet-18 (CIFAR stem) with SGD and momentum, a small transformer encoder with AdamW, and a frozen ResNet-18 backbone with a small trainable head. Each is trained for 20 steps on fixed random data. It reports:
+
+- the file size
+- the time a synchronous save blocks training
+- with background saving: the time training is blocked (the copy to CPU memory) and the time written in the background
+- for light mode: the max weight difference right after loading, and the loss after 20 more steps compared with an uninterrupted run
+
+```bash
+python benchmarks/checkpoint_sizes.py            # GPU if available
+python benchmarks/checkpoint_sizes.py --quick    # smaller models, a CPU smoke test
+```
+
+Results are saved as `checkpoint_sizes_{platform}_{timestamp}.json`.
+
 ## Final GPU check before a release
 
 `verify_gpu_features.py` prints PASS, FAIL or SKIP for the features that need a GPU to verify: `run.clip_grad_norm` with the real fp16 GradScaler (with and without gradient accumulation), the ImageCache report tip for image files decoded every epoch, and a budget stop with resume. On CPU the CUDA-only checks print SKIP. It uses the installed `efficio` package.

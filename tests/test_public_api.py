@@ -11,7 +11,6 @@ PLANNED = [
     "efficio.adapters.lightning",
     "efficio.budget.planner",
     "efficio.budget.shutdown",
-    "efficio.checkpoint.light",
     "efficio.checkpoint.storage",
     "efficio.preflight",
     "efficio.report.notify",

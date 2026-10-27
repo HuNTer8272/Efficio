@@ -2,6 +2,24 @@
 
 All notable changes to Efficio are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Light checkpoints: `Run(checkpoint_mode="light")` stores floating-point weights in fp16 (cast back to their original dtype on load) and large optimizer state tensors with 8-bit blockwise quantization (pure PyTorch). Files are about 3x smaller for Adam-trained models. Scheduler, gradient scaler, RNG states and position are saved exactly; the resume is close but not bit-identical. The default stays `"exact"`.
+- Trainable-only checkpoints: `Run(save_trainable_only="auto" | True | False)`. With `"auto"` (the default), frozen parameters are left out of the checkpoint when the model has any, and a signature of them is saved instead. Resuming with different frozen weights raises `CheckpointMismatchError` instead of continuing silently.
+- Background saving: `Run(async_save=True)` (default) writes periodic checkpoints in a background thread after a fast copy to CPU memory. Budget, shutdown-signal and final saves wait for it and write synchronously. A failed background save raises at the next `run.step()`. `run.save(blocking=False)` starts a background save yourself.
+- Checkpoint metadata (format version, Efficio version, mode, trainable-only flag, sizes), and report lines with the checkpoint mode, the last file size and the save time hidden by background saving.
+- `benchmarks/checkpoint_sizes.py`: file size and save time for exact, light and trainable-only checkpoints, and the effect of a light resume.
+
+### Changed
+
+- Models with frozen parameters now get trainable-only checkpoints by default (`save_trainable_only="auto"`); pass `save_trainable_only=False` for the 0.1.x behaviour. Periodic saves now run in the background by default; pass `async_save=False` to write them synchronously as before.
+
+### Compatibility
+
+- Checkpoints written by Efficio 0.1.x load and resume unchanged. Exact-mode checkpoints of models without frozen parameters keep the 0.1.x layout (plus a metadata entry).
+
 ## [0.1.1] - 2026-10-27
 
 Patch release, no new features.
