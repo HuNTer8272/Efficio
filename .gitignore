@@ -11,3 +11,6 @@ fake_images/
 # Build output
 build/
 dist/
+
+# Local environment and secrets (never committed)
+.env.local
