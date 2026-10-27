@@ -22,6 +22,7 @@ background thread is raised in the main thread by the next check(), wait() or sa
 import copy
 import glob
 import hashlib
+import json
 import math
 import os
 import random
@@ -46,6 +47,32 @@ _SIGNATURE_SAMPLE = 4096     # elements hashed per frozen tensor
 
 class CheckpointMismatchError(RuntimeError):
     """The checkpoint doesn't fit the model, e.g. its frozen weights are different."""
+
+
+class DifferentRunError(CheckpointMismatchError):
+    """The checkpoint was saved by a different run: other parameter names or shapes, or
+    another optimizer type."""
+
+    def __init__(self, where, saved, current):
+        super().__init__(
+            f"{where} was saved by a different run ({describe_fingerprint(saved)}) than this "
+            f"one ({describe_fingerprint(current)}): the model's parameter names or shapes, or "
+            "the optimizer type, differ. Use another checkpoint_dir or storage for this run.")
+        self.where, self.saved, self.current = where, saved, current
+
+
+def run_fingerprint(model, optimizer):
+    """What identifies a run's checkpoints: the model's parameter names and shapes and the
+    optimizer type. The checkpoint mode is not part of it."""
+    params = [[name, list(p.shape)] for name, p in model.named_parameters()]
+    kind = type(optimizer).__name__
+    text = json.dumps({"parameters": params, "optimizer": kind})
+    return {"hash": hashlib.sha256(text.encode()).hexdigest()[:16], "optimizer": kind,
+            "parameters": len(params)}
+
+
+def describe_fingerprint(fp):
+    return f"{fp.get('optimizer', '?')}, {fp.get('parameters', '?')} parameter tensors"
 
 
 def _efficio_version():
@@ -144,6 +171,7 @@ class CheckpointManager:
         self.mode = mode
         self.trainable_only = trainable_only
         self.async_save = async_save
+        self.fingerprint = None   # run_fingerprint() of this run, saved in the metadata
         self.extra = {}      # the "extra" dict of the last loaded checkpoint
         self.meta = {}       # the metadata of the last loaded checkpoint ({} for 0.1.x files)
         self.stats = {"saves": 0, "blocking_s": 0.0, "background_s": 0.0, "waited_s": 0.0,
@@ -201,6 +229,7 @@ class CheckpointManager:
             "trainable_only": bool(frozen),
             "frozen": frozen_sig,
             "model_dtypes": dtypes,
+            "fingerprint": self.fingerprint,
             "sizes": {"model_bytes": _tensor_bytes(model_sd),
                       "optimizer_bytes": _tensor_bytes(opt_sd),
                       "frozen_tensors": len(frozen_sig)},
@@ -272,10 +301,13 @@ class CheckpointManager:
         files = sorted(glob.glob(os.path.join(self.directory, "ckpt_step*.pt")))
         return files[-1] if files else None
 
-    def load(self, model, optimizer, scheduler=None, scaler=None, path=None, map_location="cpu"):
+    def load(self, model, optimizer, scheduler=None, scaler=None, path=None, map_location="cpu",
+             fingerprint=None):
         """Restore everything. Returns the saved train_state dict, or None if nothing to
         resume. Reads checkpoints in any mode (whatever this manager's own mode is), those
-        written by Efficio 0.1.x, and early 0.2.0 "light" checkpoints (as "smallest")."""
+        written by Efficio 0.1.x, and early 0.2.0 "light" checkpoints (as "smallest").
+        fingerprint: raise DifferentRunError, before changing anything, if the checkpoint has
+        a different run fingerprint (checkpoints without one are accepted)."""
         self.wait()
         path = path or self.latest()
         if path is None:
@@ -283,6 +315,10 @@ class CheckpointManager:
         # Our own file holds RNG states and plain dicts, so the weights_only loader can't read it.
         payload = torch.load(path, map_location=map_location, weights_only=False)
         meta = dict(payload.get("meta") or {})              # 0.1.x checkpoints have none
+        saved_fp = meta.get("fingerprint")
+        if fingerprint and saved_fp and saved_fp.get("hash") != fingerprint["hash"]:
+            raise DifferentRunError(f"{path} (step {payload['train_state']['step']})",
+                                    saved_fp, fingerprint)
         mode = meta.get("mode", payload.get("mode", "exact"))
         if meta.get("format_version") == 2 and mode == "light":
             mode = meta["mode"] = "smallest"                # early builds' "light"

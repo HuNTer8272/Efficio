@@ -23,12 +23,14 @@ All notable changes to Efficio are listed here. The format follows [Keep a Chang
   - The Hugging Face token comes from `HuggingFaceHub(token=...)`, the `HF_TOKEN` environment variable, or Colab or Kaggle secrets named `HF_TOKEN`. It is never printed, logged, saved or included in error messages.
   - The report shows the storage target, the last upload and the upload time hidden in the background.
   - New optional extra: `pip install "efficio[hub]"` (huggingface_hub).
+- Run fingerprint: each checkpoint (and manifest entry) stores the model's parameter names and shapes and the optimizer type. A checkpoint from a different run is never resumed. With `resume="auto"` (the new default), Efficio warns, names where the checkpoint is and its step, moves the other run's local checkpoints into an `other_run_<time>` subfolder and starts fresh. With `resume=True`, it raises `CheckpointMismatchError`. The checkpoint mode may differ. Checkpoints without a fingerprint still resume.
 - Auto-shutdown: `Run(shutdown_when_done=True)` (default off) releases the Colab runtime after `run.report()`, but only once the final checkpoint's upload is confirmed. On Kaggle and local machines it only prints that shutdown isn't supported there.
 - `benchmarks/verify_cloud_resume.py`: starts a run on one platform with a budget stop and finishes it on another through storage, with PASS/FAIL checks.
 - `benchmarks/checkpoint_sizes.py`: file size, save time and resume quality (after one and three resumes, against an uninterrupted run and a tiny-noise baseline) for the three modes and trainable-only. `benchmarks/verify_light_resume.py`: budget stop and resume checks for light and smallest.
 
 ### Changed
 
+- `Run(resume=...)` defaults to `"auto"`: it resumes like `True` did, but a checkpoint from a different run gives a warning and a fresh start instead of an error. `resume=True` and `resume=False` work as before.
 - Models with frozen parameters now get trainable-only checkpoints by default (`save_trainable_only="auto"`); pass `save_trainable_only=False` for the 0.1.x behaviour. Periodic saves now run in the background by default; pass `async_save=False` to write them synchronously as before.
 
 ### Compatibility

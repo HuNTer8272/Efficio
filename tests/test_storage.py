@@ -18,6 +18,7 @@ from torch import nn  # noqa: E402
 from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
 import efficio  # noqa: E402
+from efficio.checkpoint.manager import CheckpointMismatchError  # noqa: E402
 from efficio.interfaces import HardwareInfo  # noqa: E402
 from efficio.storage import (  # noqa: E402
     MANIFEST,
@@ -83,19 +84,20 @@ def _data(n=64):
     return TensorDataset(x, (x.sum(1) > 0).long())
 
 
-def _model(frozen=False):
+def _model(frozen=False, width=32):
     torch.manual_seed(0)
-    model = nn.Sequential(nn.Linear(8, 32), nn.ReLU(), nn.Linear(32, 2))
+    model = nn.Sequential(nn.Linear(8, width), nn.ReLU(), nn.Linear(width, 2))
     if frozen:
         model[0].requires_grad_(False)
     return model
 
 
-def _train(ckpt_dir, storage=None, epochs=2, stop_at=None, frozen=False, **kwargs):
+def _train(ckpt_dir, storage=None, epochs=2, stop_at=None, frozen=False, width=32,
+           optim=torch.optim.Adam, **kwargs):
     """Train 4 steps per epoch. stop_at: the time budget runs out after that step (the run
-    stops and saves at the next one)."""
-    model = _model(frozen)
-    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=1e-2)
+    stops and saves at the next one). width and optim make a different run."""
+    model = _model(frozen, width)
+    opt = optim([p for p in model.parameters() if p.requires_grad], lr=1e-2)
     loader = DataLoader(_data(), batch_size=16, shuffle=True)
     kwargs.setdefault("verbose", False)
     run = efficio.Run(checkpoint_dir=str(ckpt_dir), storage=storage, **kwargs)
@@ -224,6 +226,70 @@ def test_local_checkpoint_used_when_not_older(tmp_path, hardware):
     _train(tmp_path / "home", remote, epochs=1)
     run, _ = _train(tmp_path / "home", remote, epochs=2)
     assert run.remote.stats["downloaded"] is None and run._resumed_from == (1, 0)
+
+
+# ---------- checkpoints of a different run ----------
+
+def test_fingerprint_in_manifest_and_meta(tmp_path, hardware):
+    run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1)
+    entry = run.remote.latest()
+    meta = torch.load(run.ckpt.latest(), weights_only=False)["meta"]
+    assert entry["fingerprint"] == meta["fingerprint"] == run.ckpt.fingerprint
+    assert run.ckpt.fingerprint["optimizer"] == "Adam"
+    assert run.ckpt.fingerprint["parameters"] == 4
+
+
+def test_other_mode_is_the_same_run(tmp_path, hardware):
+    store = FakeStorage()
+    _train(tmp_path / "a", store, epochs=1, checkpoint_mode="light")
+    run, _ = _train(tmp_path / "b", store, epochs=2, checkpoint_mode="exact")
+    assert run.remote.stats["downloaded"]["step"] == 4 and run._resumed_from == (1, 0)
+
+
+@pytest.mark.parametrize("change", [{"width": 16}, {"optim": torch.optim.SGD}])
+def test_different_run_in_storage_starts_fresh_with_a_warning(tmp_path, hardware, capsys,
+                                                             change):
+    store = FakeStorage()
+    _train(tmp_path / "a", store, stop_at=5)                        # step 6 in storage
+    run, _ = _train(tmp_path / "b", store, epochs=1, **change)
+    out = capsys.readouterr().out
+    assert "WARNING: not resuming from fake://bucket (step 6)" in out
+    assert "different run" in out and "Starting fresh" in out
+    assert run.remote.stats["downloaded"] is None and run._resumed_from is None
+    assert run.state.step == 4                                      # trained from step 0
+
+
+def test_different_run_in_storage_raises_with_explicit_resume(tmp_path, hardware):
+    store = FakeStorage()
+    _train(tmp_path / "a", store, epochs=1)
+    with pytest.raises(CheckpointMismatchError, match=r"fake://bucket \(step 4\)"):
+        _train(tmp_path / "b", store, epochs=1, width=16, resume=True)
+    assert os.listdir(tmp_path / "b") == []                         # nothing downloaded
+
+
+def test_different_run_on_this_machine_starts_fresh_with_a_warning(tmp_path, hardware, capsys):
+    _train(tmp_path / "local", epochs=3)                            # step 12, another model
+    run, _ = _train(tmp_path / "local", epochs=1, width=16)
+    out = capsys.readouterr().out
+    assert "WARNING: not resuming from" in out and "(step 12)" in out
+    assert run._resumed_from is None and run.state.step == 4
+    aside = [d for d in os.listdir(tmp_path / "local") if d.startswith("other_run_")]
+    assert len(aside) == 1 and os.listdir(tmp_path / "local" / aside[0])   # kept, not deleted
+    assert os.path.basename(run.ckpt.latest()) == "ckpt_step000000004.pt"  # this run's own
+    again, _ = _train(tmp_path / "local", epochs=2, width=16)       # and it resumes from it
+    assert again._resumed_from == (1, 0) and again.state.step == 8
+
+
+def test_different_run_on_this_machine_raises_with_explicit_resume(tmp_path, hardware):
+    _train(tmp_path / "local", epochs=1)
+    with pytest.raises(CheckpointMismatchError, match="different run"):
+        _train(tmp_path / "local", epochs=1, optim=torch.optim.SGD, resume=True)
+    assert sorted(os.listdir(tmp_path / "local")) == ["ckpt_step000000004.pt"]  # untouched
+
+
+def test_invalid_resume_value(tmp_path, hardware):
+    with pytest.raises(ValueError, match="resume"):
+        efficio.Run(checkpoint_dir=str(tmp_path), resume="yes", verbose=False)
 
 
 # ---------- errors, waiting and retries ----------

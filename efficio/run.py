@@ -22,7 +22,14 @@ import torch
 
 from .budget import shutdown
 from .checkpoint import CheckpointManager
-from .checkpoint.manager import _efficio_version, _rng_state, _set_rng_state, checkpoint_step
+from .checkpoint.manager import (
+    DifferentRunError,
+    _efficio_version,
+    _rng_state,
+    _set_rng_state,
+    checkpoint_step,
+    run_fingerprint,
+)
 from .data.image_cache import CachedImageDataset
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
@@ -80,7 +87,11 @@ class Run:
     checkpoint_dir: where checkpoints go (default: a sensible folder per platform).
     save_every_minutes: periodic checkpoint interval.
     grad_accum_steps: micro-batches per optimizer step.
-    resume: continue from the latest checkpoint in checkpoint_dir if there is one.
+    resume: "auto" (default) or True: continue from the latest checkpoint (in checkpoint_dir,
+        or in storage if that one is newer). A checkpoint saved by a different run (other
+        parameter names or shapes, or another optimizer type) is never resumed: with "auto"
+        a warning is printed and training starts fresh, with True it raises
+        CheckpointMismatchError. False: always start fresh.
     optimize_data: tune DataLoaders passed to loop() (workers, pinned memory, prefetching).
     channels_last: "auto", True or False; channels_last memory format for conv models on GPU.
     checkpoint_mode: how checkpoints are stored; any mode can resume from any other.
@@ -106,13 +117,15 @@ class Run:
     """
 
     def __init__(self, budget=None, checkpoint_dir=None, save_every_minutes=15,
-                 grad_accum_steps=1, resume=True, verbose=True,
+                 grad_accum_steps=1, resume="auto", verbose=True,
                  optimize_data=True, channels_last="auto", checkpoint_mode="exact",
                  save_trainable_only="auto", async_save=True, storage=None, keep_remote=3,
                  upload_timeout=120, shutdown_when_done=False):
         if save_trainable_only not in ("auto", True, False):
             raise ValueError('save_trainable_only must be "auto", True or False, '
                              f"not {save_trainable_only!r}")
+        if resume not in ("auto", True, False):
+            raise ValueError(f'resume must be "auto", True or False, not {resume!r}')
         self.profiler = Profiler()               # setup time is measured from here
         self.hw = detect_hardware()
         self.device = torch.device(self.hw.device)
@@ -197,9 +210,15 @@ class Run:
         if self.ckpt.trainable_only and frozen:
             self._log(f"[efficio] checkpoints: trainable parameters only "
                       f"({frozen} frozen tensors are checked, not saved)")
+        self.ckpt.fingerprint = run_fingerprint(self.model, optimizer)
         if self.resume:
-            saved = self.ckpt.load(self.model, optimizer, scheduler, self.scaler,
-                                   path=self._resume_file(), map_location="cpu")
+            path = self._resume_file()
+            try:
+                saved = self.ckpt.load(self.model, optimizer, scheduler, self.scaler, path=path,
+                                       map_location="cpu", fingerprint=self.ckpt.fingerprint)
+            except DifferentRunError as e:
+                self._different_run(e)
+                saved = self._move_aside_local_checkpoints()
             if saved is not None:
                 for k, v in saved.items():
                     setattr(self.state, k, v)
@@ -228,6 +247,11 @@ class Run:
             return local
         if entry is None or (local is not None and checkpoint_step(local) >= entry["step"]):
             return local
+        saved_fp, mine = entry.get("fingerprint"), self.ckpt.fingerprint
+        if saved_fp and saved_fp.get("hash") != mine["hash"]:       # checked before download
+            self._different_run(DifferentRunError(f"{where} (step {entry['step']})",
+                                                  saved_fp, mine))
+            return local                # a matching local checkpoint can still be resumed
         if local is not None:
             self._log(f"[efficio] {where} has a newer checkpoint (step {entry['step']}) than "
                       f"this machine (step {checkpoint_step(local)})")
@@ -236,6 +260,31 @@ class Run:
                   f"{entry.get('mode', 'exact')} mode, saved on {entry.get('platform', '?')} "
                   f"at {entry.get('time', '?')}; sha256 verified")
         return path
+
+    def _different_run(self, error):
+        """A checkpoint from another run: raise with resume=True, else warn and go on."""
+        if self.resume is True:
+            raise error
+        print(f"[efficio] WARNING: not resuming from {error.where}: it was saved by a different "
+              f"run ({error.saved.get('optimizer')}, {error.saved.get('parameters')} parameter "
+              f"tensors; this run: {error.current['optimizer']}, "
+              f"{error.current['parameters']}). Starting fresh. New checkpoints go to the same "
+              "places and replace the old ones there; use another checkpoint_dir or storage "
+              "to keep them, or pass resume=True to make this an error.")
+
+    def _move_aside_local_checkpoints(self):
+        """Starting fresh next to another run's checkpoints: move them into a subfolder, so
+        they are neither resumed nor mixed up with this run's (their steps may be higher).
+        Returns None (nothing resumed)."""
+        files = [f for f in os.listdir(self.ckpt.directory)
+                 if f.startswith("ckpt_step") and f.endswith(".pt")]
+        aside = os.path.join(self.ckpt.directory,
+                             time.strftime("other_run_%Y%m%d_%H%M%S"))
+        os.makedirs(aside, exist_ok=True)
+        for f in files:
+            os.replace(os.path.join(self.ckpt.directory, f), os.path.join(aside, f))
+        print(f"[efficio] moved {len(files)} checkpoint file(s) of the other run to {aside}")
+        return None
 
     @contextlib.contextmanager
     def autocast(self):
@@ -415,7 +464,7 @@ class Run:
         info = {"step": self.state.step, "epoch": self.state.epoch,
                 "batch_in_epoch": self.state.batch_in_epoch, "mode": self.ckpt.mode,
                 "trainable_only": bool(self.ckpt.trainable_only and self._frozen),
-                "efficio_version": _efficio_version()}
+                "fingerprint": self.ckpt.fingerprint, "efficio_version": _efficio_version()}
         if not blocking:
             self.remote.upload(path, info, after=self.ckpt.writer)  # raises an earlier failure
             return
