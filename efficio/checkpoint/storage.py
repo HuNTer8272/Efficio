@@ -1,9 +1,10 @@
-"""Planned for a future release: storing checkpoints on the Hugging Face Hub or Google Drive, so
-a run can move between platforms.
+"""Checkpoint storage backends live in efficio.storage; this module re-exports them."""
 
-Nothing in this module is usable yet; any name looked up here raises NotImplementedError.
-"""
-
-from .._planned import planned
-
-__getattr__ = planned(__name__)
+from ..storage import (  # noqa: F401
+    HuggingFaceHub,
+    LocalFolder,
+    RemoteCheckpoints,
+    Storage,
+    StorageError,
+    open_storage,
+)

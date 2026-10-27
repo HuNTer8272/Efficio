@@ -117,6 +117,12 @@ def tensor_signature(t):
             "sample_sha1": digest, "sum": total}
 
 
+def checkpoint_step(path):
+    """The step in a checkpoint file name (ckpt_step000001234.pt), or -1."""
+    digits = os.path.basename(path)[len("ckpt_step"):-len(".pt")]
+    return int(digits) if digits.isdigit() else -1
+
+
 def _same_signature(a, b):
     if (a["shape"], a["dtype"], a["sample_sha1"]) != (b["shape"], b["dtype"], b["sample_sha1"]):
         return False
@@ -254,6 +260,11 @@ class CheckpointManager:
     def pending(self):
         """True while a background save is still writing."""
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def writer(self):
+        """The thread writing a background save, or None."""
+        return self._thread
 
     # ---------- loading ----------
     def latest(self):

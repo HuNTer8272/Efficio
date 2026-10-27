@@ -65,6 +65,9 @@ These work and are covered by CPU tests, but haven't been confirmed on a GPU yet
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
 - **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
 - **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
+- **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. See [Save to Hugging Face Hub or Google Drive](#save-to-hugging-face-hub-or-google-drive). Not in a PyPI release yet.
+- **Resume on another machine or platform** (start on Kaggle, continue on Colab, or the other way round): the latest checkpoint is downloaded and its sha256 checked. Not in a PyPI release yet.
+- **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Not in a PyPI release yet.
 
 The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
@@ -155,6 +158,56 @@ Resume quality was checked on the same T4 with `benchmarks/verify_light_resume.p
 
 Checkpoints written by Efficio 0.1.x still load and resume. The end-of-run report shows the checkpoint mode, the size of the last file and how much save time was hidden by background saving.
 
+### Save to Hugging Face Hub or Google Drive
+
+When a Colab or Kaggle session ends, checkpoints on its disk are lost. With `storage=`, every checkpoint is also copied to a place that lasts. A new session, on the same platform or the other one, continues from there.
+
+```python
+run = efficio.Run(budget="2h", storage="hf://your-username/my-run")     # a private HF repo
+# or on Colab, after you have mounted Google Drive yourself:
+run = efficio.Run(budget="2h", storage="/content/drive/MyDrive/my-run")
+```
+
+- **Hugging Face Hub** needs `pip install "efficio[hub]"`. If the repo doesn't exist, Efficio creates it as a private repo. If the repo exists and is public, Efficio prints a warning. With `hf://user/repo/folder`, the run's files go in a folder of the repo.
+- **Google Drive, or any other folder.** Mount Drive first with `from google.colab import drive; drive.mount('/content/drive')`. Efficio doesn't mount Drive for you, and it refuses a `/content/drive/...` path while Drive isn't mounted. Every file is copied under a temporary name and then renamed, so you never see a half-copied file under its real name.
+- **Background uploads.** After each local save, the file is uploaded in a background thread, one file at a time. A failed upload is tried 3 times, with a pause between tries. If it still fails, the error is raised at the next `run.step()`. The local checkpoint is kept either way.
+- **The manifest.** `manifest.json` in the storage lists each checkpoint with its file name, step, epoch, mode, size, sha256, Efficio version, platform and time. A checkpoint is added only after its upload has finished, so a half-uploaded file never becomes the latest. Storage keeps the newest `keep_remote` checkpoints (default 3). Older ones are deleted only after the new one is listed.
+- **Budget, shutdown-signal and final saves** wait up to `upload_timeout` seconds (default 120) for their upload. They print whether the upload succeeded, or that the checkpoint is only on this machine.
+- **Resuming.** If storage has a newer checkpoint than this machine (in a new session there is none locally), `run.prepare()` downloads the latest one from the manifest. It checks the sha256 and then resumes as usual. This works with all three checkpoint modes and with trainable-only checkpoints. If the sha256 doesn't match, Efficio refuses to resume.
+- **The report** shows the storage target, the last upload's file, size and time, and how much upload time was hidden in the background.
+
+**The Hugging Face token.** Never type the token into your code.
+
+1. Create a token with write access at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+2. Save it as a secret named `HF_TOKEN`:
+   - **Colab:** click the key icon in the left sidebar, add `HF_TOKEN`, and turn on notebook access.
+   - **Kaggle:** open Add-ons, then Secrets, add `HF_TOKEN`, and tick it for the notebook. Internet must be on in the notebook settings.
+   - **Elsewhere:** set the `HF_TOKEN` environment variable.
+
+Efficio looks for the token in this order: `efficio.storage.HuggingFaceHub("user/repo", token=...)`, the `HF_TOKEN` environment variable, Colab secrets, then Kaggle secrets. It never prints, logs or saves the token, never puts it in a checkpoint or the manifest, and removes it from error messages.
+
+**Kaggle to Colab.** Use the same training code on both platforms; only the budget differs.
+
+```python
+# Kaggle (GPU on, Internet on, HF_TOKEN secret attached)
+run = efficio.Run(budget="11h30m", storage="hf://your-username/my-run")
+model, optimizer = run.prepare(model, optimizer)
+for x, y in run.loop(train_loader, epochs=50):
+    ...
+run.report()        # stopped by the budget; the stop checkpoint is uploaded first
+
+# Later on Colab (HF_TOKEN secret with notebook access)
+run = efficio.Run(budget="3h", storage="hf://your-username/my-run")
+model, optimizer = run.prepare(model, optimizer)   # downloads the latest checkpoint, resumes
+for x, y in run.loop(train_loader, epochs=50):
+    ...
+run.report()
+```
+
+**Auto-shutdown on Colab.** `Run(storage=..., shutdown_when_done=True)` releases the Colab runtime (`google.colab.runtime.unassign()`) after `run.report()`, so it stops using GPU quota. Two conditions must hold: training has ended, and the final checkpoint's upload is confirmed. If the upload failed or isn't confirmed, the runtime stays on. Make `run.report()` the last line, because code after it won't run. The default is off. Kaggle sessions can't be stopped from code, and on a local machine there is nothing to shut down, so in both places Efficio only prints a note.
+
+Checkpoints are loaded with Python's pickle, as `torch.load` does. Only resume from a repo or folder you control.
+
 ## Results
 
 These are single runs on free notebook GPUs, so read them as examples, not guarantees: speedups depend on the model, the data pipeline and how many CPU cores you get. The baselines are plain PyTorch in fp32 without any Efficio feature. Epoch-time averages leave out the first (warm-up) epoch. The raw results are in [`benchmarks/results/`](https://github.com/HuNTer8272/Efficio/tree/main/benchmarks/results) and the scripts in [`benchmarks/`](https://github.com/HuNTer8272/Efficio/tree/main/benchmarks).
@@ -215,9 +268,8 @@ Building the cache took about 36 s on cold files (139 images/s); later runs reus
 
 Planned for future releases:
 
-- Hugging Face Hub and Google Drive storage for moving runs between platforms
 - Automatic batch size with out-of-memory recovery
-- A CPU pre-flight check, a budget planner and auto-shutdown when training ends
+- A CPU pre-flight check and a budget planner
 - Both Kaggle T4 GPUs
 - Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support
 - Telegram and email notifications

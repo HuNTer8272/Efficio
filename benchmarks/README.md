@@ -110,6 +110,33 @@ python benchmarks/verify_light_resume.py         # add --quick for a CPU smoke t
 
 Results of `checkpoint_sizes.py` are saved as `checkpoint_sizes_{platform}_{timestamp}.json`.
 
+## Resume on another platform through storage
+
+`verify_cloud_resume.py` checks that a run started on one machine can finish on another through checkpoint storage. It runs in two phases.
+
+**Phase start** (for example on Kaggle):
+
+- trains ResNet-18 on synthetic data with `resume=False`
+- the time budget stops it in the middle of epoch 2; `--budget 11m` uses a real time budget instead
+- checks that the stop checkpoint's upload was confirmed before training returned and that it is the manifest's latest
+- stores the run settings next to the checkpoints
+
+**Phase finish** (for example on Colab):
+
+- starts from an empty local folder, so the checkpoint must be downloaded
+- resumes and finishes the run
+- checks that it resumed from the stored checkpoint at the stop step and that the sha256 matches the manifest
+- checks that it ends at the same final step as an uninterrupted run
+- compares the final loss and accuracy with an uninterrupted run on the same machine. The gaps may be at most 3x those of a noise baseline: the same run stopped and resumed locally with 1e-6 relative weight noise. The floors are 0.05 loss and 3 accuracy points.
+
+On Colab, run it with `%run` in a notebook cell, because Colab secrets (`HF_TOKEN`) are only available inside the notebook kernel.
+
+```bash
+python benchmarks/verify_cloud_resume.py --phase start  --storage hf://USER/efficio-verify
+python benchmarks/verify_cloud_resume.py --phase finish --storage hf://USER/efficio-verify
+python benchmarks/verify_cloud_resume.py --phase both --storage ./verify_store --quick  # CPU
+```
+
 ## Final GPU check before a release
 
 `verify_gpu_features.py` prints PASS, FAIL or SKIP for the features that need a GPU to verify: `run.clip_grad_norm` with the real fp16 GradScaler (with and without gradient accumulation), the ImageCache report tip for image files decoded every epoch, and a budget stop with resume. On CPU the CUDA-only checks print SKIP. It uses the installed `efficio` package.
