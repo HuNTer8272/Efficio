@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "efficio"
-version = "0.1.0"
+version = "0.1.1"
 description = "Get more training out of every GPU hour on Colab, Kaggle and local GPUs: mixed precision, faster data loading, time budgets and exact resume for PyTorch."
 readme = "README.md"
 license = "MIT"
@@ -42,9 +42,6 @@ Repository = "https://github.com/HuNTer8272/Efficio"
 Issues = "https://github.com/HuNTer8272/Efficio/issues"
 
 [project.optional-dependencies]
-hub = ["huggingface_hub"]
-light = ["bitsandbytes"]
-monitor = ["nvidia-ml-py"]
 dev = ["pytest", "ruff", "build", "twine"]
 
 [tool.setuptools.packages.find]
