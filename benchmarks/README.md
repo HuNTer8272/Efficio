@@ -80,6 +80,36 @@ python benchmarks/compare.py
 
 Results are saved as `imagefolder-baseline` and `imagefolder-efficio` with `"benchmark": "image-folder"`, and `compare.py` computes speedups per benchmark. The fake labels are random, so accuracy and AUROC on `--fake` data only confirm that training runs; compare speed there, not accuracy. `test_acc_pct` is the mean per-label accuracy at threshold 0.5, and `val_auroc` is the mean ROC AUC.
 
+## Checkpoint sizes, save time and resume quality
+
+`checkpoint_sizes.py` compares the exact, light and smallest checkpoint modes (plus trainable-only for the frozen backbone) for three setups:
+
+- ResNet-18 (CIFAR stem) with SGD and momentum
+- a small transformer encoder with AdamW
+- a frozen ResNet-18 backbone with a small trainable head
+
+Each is trained for 20 steps on synthetic data whose labels the model can learn. For every mode it reports:
+
+- the file size
+- the time a synchronous save blocks training
+- with background saving: the time training is blocked (the copy to CPU memory) and the time written in the background
+- resume quality against an uninterrupted run of the same steps:
+  - the max weight difference right after loading
+  - the loss and accuracy after one resume and 20 more steps
+  - the same after three consecutive save, load and train cycles
+
+A "noise baseline" row shows the same differences for an exact resume with 1e-6 relative noise on the weights. Training is sensitive, so differences of that size are normal variation, not damage from a checkpoint mode.
+
+`verify_light_resume.py` stops a ResNet-18 run with the time budget in the middle of an epoch and resumes it with a fresh `Run`, in light and in smallest mode. It prints PASS or FAIL for: the stop, the checkpoint mode, the resume, exact weights after loading (light) or fp16 rounding at most (smallest), the final step, and the final loss and accuracy against an uninterrupted run.
+
+```bash
+python benchmarks/checkpoint_sizes.py            # GPU if available
+python benchmarks/checkpoint_sizes.py --quick    # smaller models, a CPU smoke test
+python benchmarks/verify_light_resume.py         # add --quick for a CPU smoke test
+```
+
+Results of `checkpoint_sizes.py` are saved as `checkpoint_sizes_{platform}_{timestamp}.json`.
+
 ## Final GPU check before a release
 
 `verify_gpu_features.py` prints PASS, FAIL or SKIP for the features that need a GPU to verify: `run.clip_grad_norm` with the real fp16 GradScaler (with and without gradient accumulation), the ImageCache report tip for image files decoded every epoch, and a budget stop with resume. On CPU the CUDA-only checks print SKIP. It uses the installed `efficio` package.

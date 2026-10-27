@@ -49,6 +49,10 @@ Free GPUs on Colab and Kaggle have strict time limits, and much of that time is 
 - **Atomic saves**, so a crash in the middle of a save never corrupts the last good checkpoint. Periodic and emergency saves.
 - **Exact mid-epoch resume:** the same step count, and the same data order with GPULoader or unshuffled data.
 - **Gradient accumulation** (`Run(grad_accum_steps=...)`) and a validation helper (`run.evaluate_mode()`: eval mode, no gradients, mixed precision).
+- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Verified on Colab T4. Not in a PyPI release yet.
+- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Not in a PyPI release yet.
+- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Not in a PyPI release yet.
+- Resume quality of the checkpoint modes was checked on the T4 against a noise baseline (an exact resume with tiny weight noise); see [Checkpoint options](#checkpoint-options).
 
 ### Visibility
 
@@ -107,6 +111,49 @@ run.step()
 with run.evaluate_mode():        # eval mode, no gradients, mixed precision
     val_loss = loss_fn(model(x_val), y_val)
 ```
+
+### Checkpoint options
+
+```python
+run = efficio.Run(
+    budget="2h",
+    checkpoint_mode="exact",        # or "light" (~2x smaller) or "smallest" (~3x smaller)
+    save_trainable_only="auto",     # "auto": skip frozen parameters when some are frozen
+    async_save=True,                # periodic saves written in the background
+)
+```
+
+Three checkpoint modes. Any mode can resume from a checkpoint written in any other mode.
+
+| Mode | What is stored | Size (Adam) | Resume | Use it when |
+|---|---|---|---|---|
+| `"exact"` (default) | everything at full precision | 1x | bit-identical | you want the safest choice |
+| `"light"` | full-precision weights, 8-bit optimizer state | about 2x smaller | weights exact; optimizer state approximate, a tiny effect on training | you want smaller files without rounding any weights |
+| `"smallest"` | fp16 weights, 8-bit optimizer state | about 3x smaller | weights rounded to fp16, a slight effect after resume | file size matters most (slow uploads, little disk space) |
+
+Checkpoint sizes measured on a Colab T4 (`benchmarks/checkpoint_sizes.py`). These are results for these models, not a guarantee; the saving depends on the model and the optimizer.
+
+| Model | Optimizer | exact | light | smallest | trainable only |
+|---|---|---|---|---|---|
+| ResNet-18 (CIFAR stem) | SGD + momentum | 85.36 MB | 53.75 MB | 32.42 MB | - |
+| Small transformer encoder | AdamW | 59.69 MB | 30.26 MB | 20.32 MB | - |
+| Frozen ResNet-18 backbone + small head | AdamW | 44.23 MB | 43.47 MB | 21.90 MB | 1.61 MB |
+
+With a frozen backbone, the optimizer state only covers the head, so light saves little; trainable-only saving is what shrinks those checkpoints.
+
+Resume quality was checked on the same T4 with `benchmarks/verify_light_resume.py`: a ResNet-18 run stopped by the time budget mid-epoch and resumed with a fresh `Run`, 27 of 27 checks passed. Compared with an uninterrupted run:
+
+- **Exact:** bit-identical.
+- **Restored state:** in every mode the gradient scaler, scheduler and step count came back exactly, and none of the 11,173,962 second-moment values was zeroed or halved.
+- **Final loss gaps:** noise baseline (an exact resume with 1e-6 weight noise) 0.0005, light 0.0012, smallest 0.0001. Accuracy gap 0.0 points everywhere.
+
+- **Light and smallest** compress large optimizer state tensors (for example Adam's `exp_avg` and `exp_avg_sq`, SGD momentum) with 8-bit blockwise quantization. For Adam, `exp_avg_sq` is stored as its square root and `exp_avg` as its ratio to it, so the update direction after a resume matches the saved one within one quantization step. With SGD the saving is smaller (1.6x for light in the table above), because momentum is half of the checkpoint.
+- **Smallest** also stores floating-point weights in fp16 and casts them back to their original dtype on load. Integer buffers are unchanged.
+- In both modes, the scheduler, gradient scaler, RNG states and position are saved exactly.
+- **`save_trainable_only="auto"`** (default) leaves frozen parameters (`requires_grad=False`) out of the checkpoint when the model has any, and saves a signature of them instead (names, shapes, dtypes and a checksum). On resume, the model must have the same frozen weights, so load the same pretrained model and freeze the same layers before `run.prepare()`. If they differ, Efficio raises an error instead of resuming. `True` and `False` force it on or off. Buffers such as BatchNorm statistics are always saved.
+- **`async_save=True`** (default) copies the state to CPU memory at a periodic save and writes the file in a background thread, so training continues. Only one save runs at a time. Saves for the time budget, a shutdown signal and the end of training wait for any background save and then write synchronously. If a background save fails, the error is raised at the next `run.step()`. `run.save()` called by you waits until the file is written.
+
+Checkpoints written by Efficio 0.1.x still load and resume. The end-of-run report shows the checkpoint mode, the size of the last file and how much save time was hidden by background saving.
 
 ## Results
 
@@ -168,7 +215,6 @@ Building the cache took about 36 s on cold files (139 images/s); later runs reus
 
 Planned for future releases:
 
-- Light checkpoints (about 3x smaller)
 - Hugging Face Hub and Google Drive storage for moving runs between platforms
 - Automatic batch size with out-of-memory recovery
 - A CPU pre-flight check, a budget planner and auto-shutdown when training ends

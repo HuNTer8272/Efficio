@@ -56,6 +56,13 @@ def _decodes_image_files(dataset):
     return "image" in type(dataset).__name__.lower()
 
 
+def _size(nbytes):
+    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if nbytes >= factor:
+            return f"{nbytes / factor:.1f} {unit}"
+    return f"{nbytes} B"
+
+
 def _make_scaler(enabled):
     try:
         return torch.amp.GradScaler("cuda", enabled=enabled)       # PyTorch 2.3+
@@ -74,17 +81,33 @@ class Run:
     resume: continue from the latest checkpoint in checkpoint_dir if there is one.
     optimize_data: tune DataLoaders passed to loop() (workers, pinned memory, prefetching).
     channels_last: "auto", True or False; channels_last memory format for conv models on GPU.
+    checkpoint_mode: how checkpoints are stored; any mode can resume from any other.
+        "exact" (default, safest): everything at full precision, bit-identical resume.
+        "light": weights at full precision, optimizer state in 8 bits; about 2x smaller for
+        Adam, the weights resume exactly and the effect on training is tiny.
+        "smallest": light plus fp16 weights; about 3x smaller, a slight effect after resume.
+    save_trainable_only: "auto" (default: only when some parameters are frozen), True or
+        False. Frozen parameters are left out of checkpoints; resuming checks that the
+        model's frozen weights are the same ones.
+    async_save: write periodic checkpoints in a background thread (default True). Budget,
+        shutdown-signal and final saves always finish before training stops.
     """
 
     def __init__(self, budget=None, checkpoint_dir=None, save_every_minutes=15,
                  grad_accum_steps=1, resume=True, verbose=True,
-                 optimize_data=True, channels_last="auto"):
+                 optimize_data=True, channels_last="auto", checkpoint_mode="exact",
+                 save_trainable_only="auto", async_save=True):
+        if save_trainable_only not in ("auto", True, False):
+            raise ValueError('save_trainable_only must be "auto", True or False, '
+                             f"not {save_trainable_only!r}")
         self.profiler = Profiler()               # setup time is measured from here
         self.hw = detect_hardware()
         self.device = torch.device(self.hw.device)
         self.budget = Budget.parse(budget)
         self.state = TrainState(grad_accum_steps=grad_accum_steps)
-        self.ckpt = CheckpointManager(checkpoint_dir or default_checkpoint_dir(self.hw.platform))
+        self.ckpt = CheckpointManager(checkpoint_dir or default_checkpoint_dir(self.hw.platform),
+                                      mode=checkpoint_mode, async_save=async_save)
+        self.save_trainable_only = save_trainable_only
         self.save_every = save_every_minutes * 60
         self.resume = resume
         self.verbose = verbose
@@ -127,6 +150,18 @@ class Run:
             self._log("[efficio] channels_last on (conv model on GPU)")
         elif self.channels_last_setting is True:
             self._log(f"[efficio] channels_last skipped: {reason}")
+        frozen = sum(1 for p in self.model.parameters() if not p.requires_grad)
+        self.ckpt.trainable_only = (frozen > 0 if self.save_trainable_only == "auto"
+                                    else bool(self.save_trainable_only))
+        if self.ckpt.mode == "light":
+            self._log("[efficio] checkpoints: light mode (full-precision weights, "
+                      "8-bit optimizer state)")
+        elif self.ckpt.mode == "smallest":
+            self._log("[efficio] checkpoints: smallest mode (fp16 weights, "
+                      "8-bit optimizer state)")
+        if self.ckpt.trainable_only and frozen:
+            self._log(f"[efficio] checkpoints: trainable parameters only "
+                      f"({frozen} frozen tensors are checked, not saved)")
         if self.resume:
             saved = self.ckpt.load(self.model, optimizer, scheduler, self.scaler,
                                    map_location="cpu")
@@ -281,6 +316,7 @@ class Run:
         if self._micro < self.state.grad_accum_steps:
             return
         self._micro = 0
+        self.ckpt.check()               # raise a failed background save here, not later
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
@@ -290,14 +326,18 @@ class Run:
         self._maybe_save_or_stop()
 
     # ---------- checkpointing and budget ----------
-    def save(self):
-        """Save a checkpoint now. Returns its path."""
+    def save(self, blocking=True):
+        """Save a checkpoint now and return its path. By default it waits until the file is
+        written; blocking=False writes it in the background when async_save is on."""
         extra = {"shuffle_seed": self._shuffle_seed} if self._shuffle_seed is not None else None
         path = self.ckpt.save(self.state, self.model, self.optimizer, self.scheduler, self.scaler,
-                              extra=extra)
+                              extra=extra, blocking=blocking)
         self._last_save = time.time()
         self._saves += 1
-        self._log(f"[efficio] checkpoint saved: {path}")
+        if self.ckpt.pending:
+            self._log(f"[efficio] checkpoint saving in the background: {path}")
+        else:
+            self._log(f"[efficio] checkpoint saved: {path}")
         return path
 
     def _maybe_save_or_stop(self):
@@ -307,9 +347,9 @@ class Run:
             self._stop_reason = "time budget nearly used"
         if self._stop_reason:
             self._log(f"[efficio] stopping: {self._stop_reason}")
-            self.save()
+            self.save()                         # waits for any background save, then writes
         elif time.time() - self._last_save >= self.save_every:
-            self.save()
+            self.save(blocking=False)
 
     def _install_signal_handler(self):
         """Catch SIGTERM while training. Returns the previous handler, or None if ours
@@ -350,6 +390,7 @@ class Run:
             f"  checkpoints     : {self._saves} saved to {self.ckpt.directory}",
             f"  ended because   : {self._stop_reason or 'loop not finished'}",
         ]
+        lines += self._checkpoint_report()
         prof = self.profiler
         util = self._gpu.average
         lines += [
@@ -370,6 +411,26 @@ class Run:
             lines.append("  tips:")
             lines += ["    - " + t.replace("\n", "\n        ") for t in advice]
         print("\n".join(lines))
+
+    def _checkpoint_report(self):
+        try:
+            self.ckpt.wait()                    # finish a background save before reporting
+            failed = ""
+        except RuntimeError as e:
+            failed = f" (last background save FAILED: {e.__cause__ or e})"
+        st = self.ckpt.stats
+        kind = self.ckpt.mode + (", trainable parameters only" if self.ckpt.trainable_only else "")
+        size = (f", last file {_size(st['last_bytes'])}" if st["last_bytes"] is not None
+                else "")
+        lines = [f"  checkpoint mode : {kind}{size}{failed}"]
+        if st["saves"]:
+            hidden = max(st["background_s"] - st["waited_s"], 0.0)
+            line = f"  save time       : {st['blocking_s']:.1f} s blocking training"
+            if st["background_s"]:
+                line += (f", {st['background_s']:.1f} s written in the background "
+                         f"({hidden:.1f} s hidden)")
+            lines.append(line)
+        return lines
 
     def _log(self, msg):
         if self.verbose:
