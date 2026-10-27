@@ -13,8 +13,15 @@ import time
 import torch
 from torch import nn
 
-from common import (GpuUtilSampler, evaluate, make_loaders, make_model, make_optimizer,
-                    save_results, sync)
+from common import (
+    GpuUtilSampler,
+    evaluate,
+    make_loaders,
+    make_model,
+    make_optimizer,
+    save_results,
+    sync,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--epochs", type=int, default=5)

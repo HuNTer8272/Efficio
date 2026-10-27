@@ -6,12 +6,18 @@ from efficio.interfaces import HardwareInfo
 from efficio.report.profiler import Profiler, tips
 
 torch = pytest.importorskip("torch")
-from torch import nn                                                    # noqa: E402
-from torch.utils.data import (BatchSampler, DataLoader, IterableDataset,  # noqa: E402
-                              RandomSampler, SequentialSampler, TensorDataset)
+from torch import nn  # noqa: E402
+from torch.utils.data import (  # noqa: E402
+    BatchSampler,
+    DataLoader,
+    IterableDataset,
+    RandomSampler,
+    SequentialSampler,
+    TensorDataset,
+)
 
-from efficio.speed import dataloader as dl                              # noqa: E402
-from efficio.speed.memory_format import use_channels_last               # noqa: E402
+from efficio.speed import dataloader as dl  # noqa: E402
+from efficio.speed.memory_format import use_channels_last  # noqa: E402
 
 CPU = HardwareInfo("local", "cpu")
 GPU = HardwareInfo("colab", "cuda", "Tesla T4", 1, 15.0, (7, 5), False)
@@ -197,6 +203,7 @@ def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, cpu_only, 
 def test_sigterm_handler_restored_after_loop(tmp_path, cpu_only):
     """After training, SIGTERM must stop the process (or kernel) again as before."""
     import signal
+
     import efficio
     before = signal.getsignal(signal.SIGTERM)
     run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)

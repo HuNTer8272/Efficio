@@ -24,7 +24,7 @@ Efficio supports PyTorch today. TensorFlow/Keras support is planned. Keep `effic
 | `efficio/speed/` | DataLoader tuning, channels_last, GPU data pipeline, GPU augmentation |
 | `efficio/data/` | Image cache for large image datasets |
 | `efficio/report/` | Profiler and end-of-run report |
-| `efficio/budget/`, `efficio/adapters/`, `efficio/preflight.py` | Planned features (not usable yet) |
+| `efficio/budget/`, `efficio/adapters/`, `efficio/preflight.py` and other modules marked "Planned" | Planned features; any name used in them raises `NotImplementedError` |
 | `examples/` | Small runnable examples |
 | `benchmarks/` | Baseline vs Efficio comparisons and their results |
 | `tests/` | pytest tests (CPU only, so they run in CI) |
@@ -35,17 +35,18 @@ Efficio supports PyTorch today. TensorFlow/Keras support is planned. Keep `effic
 git clone https://github.com/HuNTer8272/Efficio.git
 cd Efficio
 pip install -e ".[dev]"
+ruff check .
 pytest -q
 ```
 
-The tests run on CPU. Features that need a GPU must also be checked on Colab or Kaggle before they are marked Available in the README.
+The tests run on CPU. Features that need a GPU must also be checked on Colab or Kaggle before they are marked Available in the README; `python benchmarks/verify_gpu_features.py` runs the release checks on a GPU.
 
 ## Branches and pull requests
 
 1. Branch from an up-to-date `main`: `feat/<short-name>`, `fix/<short-name>` or `release/<version>`.
 2. Keep each pull request focused on one change.
 3. Before opening a pull request:
-   - `pytest -q` passes.
+   - `ruff check .` and `pytest -q` pass (CI runs both on Python 3.10, 3.11 and 3.12).
    - New features have tests. Changed behavior has updated tests.
    - README feature statuses are accurate. A feature is **Available** only after it has been verified on a GPU; until then it is marked **Available, needs GPU verification**.
    - User-facing changes are listed in `CHANGELOG.md`.

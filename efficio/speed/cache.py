@@ -1,1 +1,8 @@
-"""Cache preprocessed datasets to disk/Drive/Kaggle so later runs skip preprocessing. Phase 3 (Person B)."""
+"""Planned for a future release: a preprocessing cache for non-image data.
+
+Nothing in this module is usable yet; any name looked up here raises NotImplementedError.
+"""
+
+from .._planned import planned
+
+__getattr__ = planned(__name__)

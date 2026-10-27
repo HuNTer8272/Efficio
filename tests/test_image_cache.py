@@ -10,12 +10,12 @@ import pytest
 
 Image = pytest.importorskip("PIL.Image")
 torch = pytest.importorskip("torch")
-from torch.utils.data import DataLoader                                  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
 
-from efficio.data import CachedImageDataset, ImageCache                  # noqa: E402
-from efficio.data import image_cache as ic                               # noqa: E402
-from efficio.interfaces import HardwareInfo                              # noqa: E402
-from efficio.speed.dataloader import optimize_loader                     # noqa: E402
+from efficio.data import CachedImageDataset, ImageCache  # noqa: E402
+from efficio.data import image_cache as ic  # noqa: E402
+from efficio.interfaces import HardwareInfo  # noqa: E402
+from efficio.speed.dataloader import optimize_loader  # noqa: E402
 
 
 def _pngs(folder, n, size=(20, 30), mode="RGB"):

@@ -58,7 +58,8 @@ def print_speedups(results):
         latest = {}
         for r in results:
             if (r["benchmark"], r["platform"]) == (bench, platform):
-                if r["run"] not in latest or r.get("timestamp", "") > latest[r["run"]].get("timestamp", ""):
+                newest = latest.get(r["run"], {}).get("timestamp", "")
+                if r["run"] not in latest or r.get("timestamp", "") > newest:
                     latest[r["run"]] = r
         bases = sorted(name for name in latest if "baseline" in name)
         others = sorted(name for name in latest if "baseline" not in name)

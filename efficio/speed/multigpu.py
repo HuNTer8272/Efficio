@@ -1,1 +1,8 @@
-"""Use both Kaggle T4s via accelerate.notebook_launcher. Phase 4 (Person B)."""
+"""Planned for a future release: training on both Kaggle T4 GPUs.
+
+Nothing in this module is usable yet; any name looked up here raises NotImplementedError.
+"""
+
+from .._planned import planned
+
+__getattr__ = planned(__name__)

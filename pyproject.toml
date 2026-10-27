@@ -1,21 +1,67 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "efficio"
-version = "0.0.1"
-description = "Get more training out of every GPU hour on Colab, Kaggle and local GPUs."
+version = "0.1.0"
+description = "Get more training out of every GPU hour on Colab, Kaggle and local GPUs: mixed precision, faster data loading, time budgets and exact resume for PyTorch."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Hassaan Tole" },
+    { name = "Durvesh Bhadgaonkar" },
+]
 requires-python = ">=3.9"
-dependencies = ["torch>=2.0", "numpy"]
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "pillow",
+]
+keywords = [
+    "pytorch", "deep-learning", "training", "gpu", "colab", "kaggle",
+    "mixed-precision", "checkpointing", "resume", "dataloader",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/HuNTer8272/Efficio"
+Repository = "https://github.com/HuNTer8272/Efficio"
+Issues = "https://github.com/HuNTer8272/Efficio/issues"
 
 [project.optional-dependencies]
 hub = ["huggingface_hub"]
 light = ["bitsandbytes"]
 monitor = ["nvidia-ml-py"]
-images = ["pillow"]
-dev = ["pytest"]
+dev = ["pytest", "ruff", "build", "twine"]
 
 [tool.setuptools.packages.find]
-include = ["efficio*"]
+include = ["efficio", "efficio.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# The shared interfaces file only changes when both maintainers agree.
+"efficio/interfaces.py" = ["I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["efficio"]
+known-local-folder = ["common", "image_common"]

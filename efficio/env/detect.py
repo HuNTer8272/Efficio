@@ -8,6 +8,7 @@ SESSION_LIMITS = {"colab": 12.0, "kaggle": 12.0, "local": 0.0}
 
 
 def detect_platform() -> str:
+    """Where we are running: "colab", "kaggle" or "local"."""
     if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
         return "kaggle"
     if os.environ.get("COLAB_RELEASE_TAG") or _has_module("google.colab"):

@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from efficio.interfaces import Budget, HardwareInfo
 from efficio.env.detect import detect_platform
+from efficio.interfaces import Budget, HardwareInfo
 
 
 def test_budget_parse():
