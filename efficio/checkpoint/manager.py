@@ -112,7 +112,10 @@ def _set_rng_state(state):
     if np is not None and "numpy" in state:
         np.random.set_state(state["numpy"])
     if torch.cuda.is_available() and "cuda" in state:
-        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
+        # The saving machine may have had more or fewer GPUs (Kaggle 2x T4, Colab 1x T4):
+        # restore the GPUs both have. Efficio trains on GPU 0.
+        for i, s in enumerate(state["cuda"][:torch.cuda.device_count()]):
+            torch.cuda.set_rng_state(s.cpu(), i)
 
 
 def _to_cpu(obj):
