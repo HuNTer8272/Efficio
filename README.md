@@ -52,6 +52,9 @@ Free GPUs on Colab and Kaggle have strict time limits, and much of that time is 
 - **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Verified on Colab T4. Not in a PyPI release yet.
 - **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Not in a PyPI release yet.
 - **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Not in a PyPI release yet.
+- **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. Verified on Kaggle (2x T4) and Colab (T4). Not in a PyPI release yet.
+- **Resume on another machine or platform:** start on Kaggle and continue on Colab, or the other way round. The latest checkpoint is downloaded and its sha256 checked. Verified from Kaggle (2x T4) to Colab (T4). Not in a PyPI release yet.
+- **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Verified on Colab T4. Not in a PyPI release yet.
 - Resume quality of the checkpoint modes was checked on the T4 against a noise baseline (an exact resume with tiny weight noise); see [Checkpoint options](#checkpoint-options).
 
 ### Visibility
@@ -65,9 +68,6 @@ These work and are covered by CPU tests, but haven't been confirmed on a GPU yet
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
 - **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
 - **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
-- **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. See [Save to Hugging Face Hub or Google Drive](#save-to-hugging-face-hub-or-google-drive). Not in a PyPI release yet.
-- **Resume on another machine or platform** (start on Kaggle, continue on Colab, or the other way round): the latest checkpoint is downloaded and its sha256 checked. Not in a PyPI release yet.
-- **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Not in a PyPI release yet.
 
 The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
@@ -207,7 +207,17 @@ for x, y in run.loop(train_loader, epochs=50):
 run.report()
 ```
 
-**Auto-shutdown on Colab.** `Run(storage=..., shutdown_when_done=True)` releases the Colab runtime (`google.colab.runtime.unassign()`) after `run.report()`, so it stops using GPU quota. Two conditions must hold: training has ended, and the final checkpoint's upload is confirmed. If the upload failed or isn't confirmed, the runtime stays on. Make `run.report()` the last line, because code after it won't run. The default is off. Kaggle sessions can't be stopped from code, and on a local machine there is nothing to shut down, so in both places Efficio only prints a note.
+**Auto-shutdown on Colab.** `Run(storage=..., shutdown_when_done=True)` releases the Colab runtime (`google.colab.runtime.unassign()`) after `run.report()`, so it stops using GPU quota. Two conditions must hold: training has ended, and the final checkpoint's upload is confirmed. If the upload failed or isn't confirmed, the runtime stays on. Colab removes the machine a few seconds after it is released, and Efficio waits up to 60 s for that, so code after `run.report()` doesn't run. If the runtime is still there after 60 s, Efficio prints a warning. Make `run.report()` the last line. The default is off. Kaggle sessions can't be stopped from code, and on a local machine there is nothing to shut down, so in both places Efficio only prints a note.
+
+**Results on free GPUs** (`benchmarks/verify_cloud_resume.py` and a Colab Drive check, single runs):
+
+| Check | Result |
+|---|---|
+| Kaggle (2x T4): budget stop, upload to a private HF repo | stopped at step 97 of 192, 128 MB upload confirmed before training returned (3/3 checks) |
+| Colab (T4): download from HF, resume, finish | sha256 verified, resumed at step 97, ended at step 192 like the uninterrupted run (7/7 checks) |
+| Final loss / accuracy gap to an uninterrupted run | 0.0014 / 0.2 points (noise baseline: 0.0009 / 0.0; limits 0.05 / 3.0) |
+| Colab (T4): Google Drive folder, budget stop, resume after deleting the local checkpoints | 7/7 checks; final weights bit-identical to an uninterrupted run |
+| Colab (T4): `shutdown_when_done=True` | runtime released after the final checkpoint was confirmed on Drive |
 
 Checkpoints are loaded with Python's pickle, as `torch.load` does. Only resume from a repo or folder you control.
 

@@ -27,6 +27,7 @@ All notable changes to Efficio are listed here. The format follows [Keep a Chang
   - Storage holding another run's checkpoints: `run.prepare()` refuses to start and writes nothing there. It raises `StorageInUseError` (a `CheckpointMismatchError`) naming the storage path, the other run's step and fingerprint, unless `Run(overwrite_storage=True)` is passed. With that, it warns and deletes the other run's checkpoints once this run's first checkpoint is uploaded.
   - Another run's checkpoint on this machine: with `resume="auto"` (the new default), Efficio warns, names the file and step, moves the other run's local checkpoints into an `other_run_<time>` subfolder and starts fresh. With `resume=True`, it raises `CheckpointMismatchError`.
 - Auto-shutdown: `Run(shutdown_when_done=True)` (default off) releases the Colab runtime after `run.report()`, but only once the final checkpoint's upload is confirmed. On Kaggle and local machines it only prints that shutdown isn't supported there.
+  - After releasing the runtime, Efficio waits up to 60 s for Colab to remove it, so code after `run.report()` doesn't run; if it is still there, a warning is printed.
 - `benchmarks/verify_cloud_resume.py`: starts a run on one platform with a budget stop and finishes it on another through storage, with PASS/FAIL checks.
 - `benchmarks/checkpoint_sizes.py`: file size, save time and resume quality (after one and three resumes, against an uninterrupted run and a tiny-noise baseline) for the three modes and trainable-only. `benchmarks/verify_light_resume.py`: budget stop and resume checks for light and smallest.
 
@@ -34,6 +35,11 @@ All notable changes to Efficio are listed here. The format follows [Keep a Chang
 
 - `Run(resume=...)` defaults to `"auto"`: it resumes like `True` did, but a local checkpoint from a different run gives a warning and a fresh start instead of an error. `resume=True` and `resume=False` work as before.
 - Models with frozen parameters now get trainable-only checkpoints by default (`save_trainable_only="auto"`); pass `save_trainable_only=False` for the 0.1.x behaviour. Periodic saves now run in the background by default; pass `async_save=False` to write them synchronously as before.
+- The report's general "GPU is waiting for data" tip (more DataLoader workers) is no longer shown when training took less than 2 minutes, like the setup-time and batch-size tips in 0.1.1. In a short run, worker start-up alone makes the data-wait share large. The GPULoader and ImageCache tips still show, because they depend on the dataset.
+
+### Fixed
+
+- Resuming on a machine with fewer GPUs than the one that saved the checkpoint (for example Kaggle 2x T4 to Colab 1x T4) failed with `IndexError` while restoring the CUDA random number states. Efficio now restores the states of the GPUs both machines have; training uses GPU 0.
 
 ### Compatibility
 

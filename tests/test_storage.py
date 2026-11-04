@@ -540,7 +540,7 @@ def test_token_lookup_order(monkeypatch):
 
 @pytest.fixture
 def colab_runtime(monkeypatch):
-    calls = []
+    calls = type("Calls", (list,), {})()                     # a list that can carry .clock
     google = types.ModuleType("google")
     colab = types.ModuleType("google.colab")
     runtime = types.ModuleType("google.colab.runtime")
@@ -549,15 +549,49 @@ def colab_runtime(monkeypatch):
     for name, module in (("google", google), ("google.colab", colab),
                          ("google.colab.runtime", runtime)):
         monkeypatch.setitem(sys.modules, name, module)
+    # A fake clock for the wait after unassign(): sleeping moves it on, nothing really waits.
+    from efficio.budget import shutdown
+    clock = types.SimpleNamespace(now=0.0, slept=0.0, on_sleep=None)
+
+    def sleep(seconds):
+        clock.now += seconds
+        clock.slept += seconds
+        if clock.on_sleep:
+            clock.on_sleep()
+
+    monkeypatch.setattr(shutdown, "time", types.SimpleNamespace(
+        monotonic=lambda: clock.now, sleep=sleep))
+    calls.clock = clock
     return calls
 
 
-def test_shutdown_after_a_confirmed_final_upload(tmp_path, hardware, colab_runtime):
+class _RuntimeGone(BaseException):
+    """Stands in for the process ending when Colab removes the machine."""
+
+
+def test_shutdown_after_a_confirmed_final_upload(tmp_path, hardware, colab_runtime, capsys):
     hardware("colab")
     run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True)
     assert colab_runtime == []                              # not before report()
+
+    def gone():
+        raise _RuntimeGone
+    colab_runtime.clock.on_sleep = gone                     # the machine goes away while waiting
+    after_report = []
+    with pytest.raises(_RuntimeGone):
+        run.report()
+        after_report.append("ran")                          # code after report() must not run
+    assert colab_runtime == ["unassign"] and after_report == []
+    assert "still running" not in capsys.readouterr().out
+
+
+def test_shutdown_warns_if_the_runtime_stays(tmp_path, hardware, colab_runtime, capsys):
+    hardware("colab")
+    run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True)
     run.report()
-    assert colab_runtime == ["unassign"]
+    assert colab_runtime == ["unassign"] and colab_runtime.clock.slept >= 60
+    assert "WARNING: shutdown_when_done: the Colab runtime is still running 60 s" in \
+        capsys.readouterr().out
 
 
 def test_no_shutdown_when_the_upload_failed(tmp_path, hardware, colab_runtime, capsys):
