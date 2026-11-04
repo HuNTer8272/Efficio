@@ -10,8 +10,6 @@ PLANNED = [
     "efficio.adapters.hf_trainer",
     "efficio.adapters.lightning",
     "efficio.budget.planner",
-    "efficio.budget.shutdown",
-    "efficio.checkpoint.storage",
     "efficio.preflight",
     "efficio.report.notify",
     "efficio.speed.amp",

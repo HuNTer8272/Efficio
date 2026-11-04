@@ -175,8 +175,18 @@ def test_short_run_hides_batch_size_tip():
     # Low utilization with little data-wait: shown after 2 minutes of training, hidden before
     assert any("batch size" in t for t in tips(2.0, 60.0, 1.0, train_s=600.0))
     assert not any("batch size" in t for t in tips(2.0, 60.0, 1.0, train_s=30.0))
-    # Data-wait tips still appear in short runs
-    assert any("waiting for data" in t for t in tips(25.0, 60.0, 1.0, train_s=30.0))
+
+
+def test_short_run_hides_general_data_wait_tip():
+    # "More DataLoader workers": shown after 2 minutes of training, hidden before
+    assert any("DataLoader workers" in t for t in tips(25.0, 60.0, 1.0, train_s=120.0))
+    assert not any("waiting for data" in t for t in tips(17.0, 2.0, 37.0, train_s=1.0))
+    assert tips(25.0, 60.0, 1.0, train_s=30.0) == []
+    # The dataset-specific GPULoader and ImageCache tips still appear in short runs
+    assert any("ImageCache.build" in t for t in tips(25.0, 60.0, 1.0, image_files=True,
+                                                     train_s=30.0))
+    assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True,
+                                              train_s=30.0))
 
 
 # ---------- resume (quickstart-style) ----------

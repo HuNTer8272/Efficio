@@ -14,11 +14,32 @@ All notable changes to Efficio are listed here. The format follows [Keep a Chang
 - Trainable-only checkpoints: `Run(save_trainable_only="auto" | True | False)`. With `"auto"` (the default), frozen parameters are left out of the checkpoint when the model has any, and a signature of them is saved instead. Resuming with different frozen weights raises `CheckpointMismatchError` instead of continuing silently.
 - Background saving: `Run(async_save=True)` (default) writes periodic checkpoints in a background thread after a fast copy to CPU memory. Budget, shutdown-signal and final saves wait for it and write synchronously. A failed background save raises at the next `run.step()`. `run.save(blocking=False)` starts a background save yourself.
 - Checkpoint metadata (format version, Efficio version, mode, trainable-only flag, sizes), and report lines with the checkpoint mode, the last file size and the save time hidden by background saving.
+- Checkpoint storage: `Run(storage="hf://user/repo")` (a Hugging Face repo, created private if missing), `Run(storage="/content/drive/MyDrive/run")` (a folder, such as a Google Drive folder you have mounted) or an `efficio.storage.Storage` object.
+  - Each checkpoint is uploaded in a background thread after it is saved, one upload at a time, with 3 attempts. A failed upload raises at the next `run.step()`.
+  - `manifest.json` lists each checkpoint's file, step, epoch, mode, size, sha256, Efficio version, platform and time. An entry is added only after its upload has finished, so a half-uploaded file is never the latest.
+  - `keep_remote` (default 3) checkpoints are kept in storage; older ones are deleted after the new one is listed.
+  - Budget, shutdown-signal and final saves wait for their upload (`upload_timeout`, default 120 s) and print whether it succeeded.
+  - `run.prepare()` downloads the latest checkpoint when storage has a newer one than this machine, for example in a new session or on the other platform, and refuses it if its sha256 doesn't match. This works with every checkpoint mode and with trainable-only checkpoints.
+  - The Hugging Face token comes from `HuggingFaceHub(token=...)`, the `HF_TOKEN` environment variable, or Colab or Kaggle secrets named `HF_TOKEN`. It is never printed, logged, saved or included in error messages.
+  - The report shows the storage target, the last upload and the upload time hidden in the background.
+  - New optional extra: `pip install "efficio[hub]"` (huggingface_hub).
+- Run fingerprint: each checkpoint (and manifest entry) stores the model's parameter names and shapes and the optimizer type. A checkpoint from a different run is never resumed. The checkpoint mode may differ. Checkpoints without a fingerprint still resume.
+  - Storage holding another run's checkpoints: `run.prepare()` refuses to start and writes nothing there. It raises `StorageInUseError` (a `CheckpointMismatchError`) naming the storage path, the other run's step and fingerprint, unless `Run(overwrite_storage=True)` is passed. With that, it warns and deletes the other run's checkpoints once this run's first checkpoint is uploaded.
+  - Another run's checkpoint on this machine: with `resume="auto"` (the new default), Efficio warns, names the file and step, moves the other run's local checkpoints into an `other_run_<time>` subfolder and starts fresh. With `resume=True`, it raises `CheckpointMismatchError`.
+- Auto-shutdown: `Run(shutdown_when_done=True)` (default off) releases the Colab runtime after `run.report()`, but only once the final checkpoint's upload is confirmed. On Kaggle and local machines it only prints that shutdown isn't supported there.
+  - After releasing the runtime, Efficio waits up to 60 s for Colab to remove it, so code after `run.report()` doesn't run; if it is still there, a warning is printed.
+- `benchmarks/verify_cloud_resume.py`: starts a run on one platform with a budget stop and finishes it on another through storage, with PASS/FAIL checks.
 - `benchmarks/checkpoint_sizes.py`: file size, save time and resume quality (after one and three resumes, against an uninterrupted run and a tiny-noise baseline) for the three modes and trainable-only. `benchmarks/verify_light_resume.py`: budget stop and resume checks for light and smallest.
 
 ### Changed
 
+- `Run(resume=...)` defaults to `"auto"`: it resumes like `True` did, but a local checkpoint from a different run gives a warning and a fresh start instead of an error. `resume=True` and `resume=False` work as before.
 - Models with frozen parameters now get trainable-only checkpoints by default (`save_trainable_only="auto"`); pass `save_trainable_only=False` for the 0.1.x behaviour. Periodic saves now run in the background by default; pass `async_save=False` to write them synchronously as before.
+- The report's general "GPU is waiting for data" tip (more DataLoader workers) is no longer shown when training took less than 2 minutes, like the setup-time and batch-size tips in 0.1.1. In a short run, worker start-up alone makes the data-wait share large. The GPULoader and ImageCache tips still show, because they depend on the dataset.
+
+### Fixed
+
+- Resuming on a machine with fewer GPUs than the one that saved the checkpoint (for example Kaggle 2x T4 to Colab 1x T4) failed with `IndexError` while restoring the CUDA random number states. Efficio now restores the states of the GPUs both machines have; training uses GPU 0.
 
 ### Compatibility
 

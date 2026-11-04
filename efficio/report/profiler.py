@@ -140,9 +140,10 @@ def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=Fa
     The data-wait and utilization tips are about keeping a GPU busy, so they need on_gpu.
     gpu_loader_fits: the training set is a torchvision dataset small enough for GPULoader.
     image_files: the dataset decodes image files on every access (ImageCache would help).
-    train_s: seconds of training. Below MIN_TRAIN_S_FOR_TIPS the setup-time and batch-size
-    tips are left out: in a short run setup is naturally a large share, and utilization is
-    measured over too little time. None means unknown (no such check)."""
+    train_s: seconds of training. Below MIN_TRAIN_S_FOR_TIPS the setup-time, batch-size and
+    general data-wait tips are left out: in a short run setup and worker start-up are
+    naturally a large share, and utilization is measured over too little time. The GPULoader
+    and ImageCache tips still show, since they depend on the dataset. None means unknown."""
     long_enough = train_s is None or train_s >= MIN_TRAIN_S_FOR_TIPS
     out = []
     if on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and gpu_loader_fits:
@@ -153,7 +154,8 @@ def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=Fa
         out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time while the CPU "
                    "decodes and resizes image files. Decode them once into an ImageCache and "
                    "augment on the GPU:\n" + IMAGE_CACHE_EXAMPLE)
-    elif on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT:
+    elif on_gpu and long_enough and data_wait_pct > DATA_WAIT_TIP_PCT:
+        # In a short run, worker start-up alone is a large share of the data-wait time
         out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Try more "
                    "DataLoader workers, or lighter CPU preprocessing.")
     elif on_gpu and long_enough and gpu_util_pct is not None and gpu_util_pct < LOW_UTIL_PCT:

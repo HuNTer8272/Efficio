@@ -67,6 +67,19 @@ def test_checkpoint_from_0_1_x_loads_and_resumes(tmp_path, cpu_only):
                        fresh_opt.state_dict()["state"][0]["exp_avg"])
 
 
+@pytest.mark.parametrize("saved_gpus,here", [(2, 1), (1, 2), (2, 2)])
+def test_cuda_rng_restored_across_gpu_counts(monkeypatch, saved_gpus, here):
+    """A checkpoint from Kaggle (2 GPUs) resumes on Colab (1 GPU) and the other way round."""
+    restored = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: here)
+    monkeypatch.setattr(torch.cuda, "set_rng_state", lambda s, i: restored.append(i))
+    state = {"python": random.getstate(), "torch": torch.get_rng_state(),
+             "cuda": [torch.zeros(16, dtype=torch.uint8)] * saved_gpus}
+    cm._set_rng_state(state)
+    assert restored == list(range(min(saved_gpus, here)))
+
+
 def test_exact_mode_is_bit_identical_and_has_metadata(tmp_path):
     model, opt = _adam_model()
     mgr = CheckpointManager(str(tmp_path))
