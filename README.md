@@ -49,25 +49,25 @@ Free GPUs on Colab and Kaggle have strict time limits, and much of that time is 
 - **Atomic saves**, so a crash in the middle of a save never corrupts the last good checkpoint. Periodic and emergency saves.
 - **Exact mid-epoch resume:** the same step count, and the same data order with GPULoader or unshuffled data.
 - **Gradient accumulation** (`Run(grad_accum_steps=...)`) and a validation helper (`run.evaluate_mode()`: eval mode, no gradients, mixed precision).
-- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits, about 2x smaller for Adam-trained models; smallest also stores the weights in fp16, about 3x smaller. Verified on Colab T4. Not in a PyPI release yet.
-- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Not in a PyPI release yet.
-- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Not in a PyPI release yet.
-- **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. Verified on Kaggle (2x T4) and Colab (T4). Not in a PyPI release yet.
-- **Resume on another machine or platform:** start on Kaggle and continue on Colab, or the other way round. The latest checkpoint is downloaded and its sha256 checked. Verified from Kaggle (2x T4) to Colab (T4). Not in a PyPI release yet.
-- **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Verified on Colab T4. Not in a PyPI release yet.
+- **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). Verified on a Colab T4 with efficio 0.1.1 from PyPI (`benchmarks/verify_gpu_features.py`, 4/4 checks passed).
+- **Smaller checkpoints** (`Run(checkpoint_mode="light")` or `"smallest"`): light keeps the weights at full precision and stores the optimizer state in 8 bits; smallest also stores the weights in fp16. Measured on a Colab T4: light is 2.0x smaller for a transformer with AdamW and 1.6x for ResNet-18 with SGD, smallest 2.9x and 2.6x (see [Checkpoint options](#checkpoint-options)). Available since 0.2.0.
+- **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Available since 0.2.0.
+- **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Available since 0.2.0.
+- **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. Hugging Face storage needs `pip install "efficio[hub]"`. Verified on Kaggle (2x T4) and Colab (T4). Available since 0.2.0.
+- **Resume on another machine or platform:** start on Kaggle and continue on Colab, or the other way round. The latest checkpoint is downloaded and its sha256 checked. Verified from Kaggle (2x T4) to Colab (T4). Available since 0.2.0.
+- **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Verified on Colab T4. Available since 0.2.0.
 - Resume quality of the checkpoint modes was checked on the T4 against a noise baseline (an exact resume with tiny weight noise); see [Checkpoint options](#checkpoint-options).
 
 ### Visibility
 
 - **End-of-run report:** setup vs training time, time spent waiting for data, average GPU utilization, GPU minutes used, the optimizations applied, and plain-language tips (for example: use GPULoader, use ImageCache, or try a larger batch).
+- **ImageCache tip for image datasets decoded from files every epoch.** Verified on a Colab T4 with efficio 0.1.1 from PyPI (`benchmarks/verify_gpu_features.py`, 4/4 checks passed).
 
 ### Available, needs GPU verification
 
 These work and are covered by CPU tests, but haven't been confirmed on a GPU yet:
 
 - **Same data order after a resume with a shuffled DataLoader** (per-epoch seeded shuffle).
-- **Gradient clipping that works with fp16 and gradient accumulation** (`run.clip_grad_norm(max_norm)`). It has run on a Kaggle T4 without errors; its values with the fp16 scaler are only checked on CPU so far.
-- **Report tip for image datasets decoded from files every epoch** (suggests ImageCache).
 
 The large-image features (ImageCache, CachedImageDataset, GPU augmentation through `gpu_transform`, `evaluate_mode`) have been verified on Kaggle (Tesla T4) but not yet on Colab.
 
