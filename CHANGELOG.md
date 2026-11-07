@@ -2,7 +2,13 @@
 
 All notable changes to Efficio are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-04
+
+Never lose a training run, on any platform. This release adds:
+- smaller checkpoints (light and smallest modes)
+- trainable-only and background saves
+- checkpoint storage on the Hugging Face Hub (`pip install "efficio[hub]"`) or a Google Drive folder, so a run continues after the session ends or on the other platform (verified from Kaggle 2x T4 to Colab T4)
+- auto-shutdown of the Colab runtime once the final checkpoint is safely stored
 
 ### Added
 
@@ -87,5 +93,6 @@ First public release.
 - On Windows and macOS, DataLoader workers are not added automatically.
 - Planned features (light checkpoints, Hub and Drive storage, automatic batch size, pre-flight check, budget planner, auto-shutdown, multi-GPU, notifications, framework adapters) are not included; their modules raise `NotImplementedError`.
 
+[0.2.0]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.2.0
 [0.1.1]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.0
