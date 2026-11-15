@@ -3,7 +3,7 @@
 import pytest
 
 from efficio.interfaces import HardwareInfo
-from efficio.report.profiler import Profiler, tips
+from efficio.report.profiler import Profiler, tips, withheld_tips_note
 
 torch = pytest.importorskip("torch")
 from torch import nn  # noqa: E402
@@ -196,6 +196,40 @@ def test_short_run_hides_general_data_wait_tip():
     assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, train_s=30.0))
 
 
+def test_withheld_tips_note_on_a_short_run():
+    # Each of the three generic tips alone: the one line is given, once
+    for args in [(25.0, 60.0, 1.0), (2.0, 60.0, 1.0), (2.0, 95.0, 30.0)]:
+        note = withheld_tips_note(*args, train_s=45.0)
+        assert note == (
+            "Tuning tips (data-wait, batch size, setup time) need about 120s of training "
+            "to be reliable; this run was 45s. Not shown."
+        )
+    # All three would have fired at once: still one line
+    assert withheld_tips_note(25.0, 60.0, 30.0, train_s=45.0).count("Not shown") == 1
+
+
+def test_no_withheld_tips_note_from_120s_or_when_nothing_was_withheld():
+    assert withheld_tips_note(25.0, 60.0, 30.0, train_s=120.0) is None  # long enough
+    assert withheld_tips_note(25.0, 60.0, 30.0, train_s=600.0) is None
+    assert withheld_tips_note(25.0, 60.0, 30.0, train_s=None) is None  # unknown length
+    # Short run, but no generic tip would have fired anyway
+    assert withheld_tips_note(2.0, 95.0, 1.0, train_s=45.0) is None
+    assert withheld_tips_note(2.0, None, 1.0, train_s=45.0) is None
+    assert withheld_tips_note(25.0, 60.0, 30.0, train_s=45.0, on_gpu=False) is not None  # setup
+    assert withheld_tips_note(25.0, 60.0, 1.0, train_s=45.0, on_gpu=False) is None  # CPU, no setup
+
+
+def test_dataset_tips_do_not_trigger_the_note():
+    # Data-wait is high but the GPULoader / ImageCache tip is what fires, and it still shows
+    # in a short run, so nothing was withheld
+    assert withheld_tips_note(25.0, 60.0, 1.0, gpu_loader_fits=True, train_s=30.0) is None
+    assert withheld_tips_note(25.0, 60.0, 1.0, image_files=True, train_s=30.0) is None
+    assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, train_s=30.0))
+    # With a setup tip withheld next to a dataset tip: dataset tip shown, note given
+    assert withheld_tips_note(25.0, 60.0, 30.0, gpu_loader_fits=True, train_s=30.0) is not None
+    assert any("GPULoader" in t for t in tips(25.0, 60.0, 30.0, gpu_loader_fits=True, train_s=30.0))
+
+
 # ---------- resume (quickstart-style) ----------
 
 
@@ -266,6 +300,54 @@ def test_report_after_resuming_a_finished_run(tmp_path, cpu_only, capsys):
         run.report()
     assert run._resumed_from == (1, 0) and run.profiler.steps == 0
     assert "data-wait       : 0%" in capsys.readouterr().out
+
+
+def _report_with_timeline(tmp_path, capsys, train_s):
+    """Train a few CPU steps, then fix the profiler timeline: 100 s of setup (a 'Setup took'
+    tip in a long run) and `train_s` seconds of training. Returns the printed report."""
+    import efficio
+
+    run = efficio.Run(checkpoint_dir=str(tmp_path), verbose=False)
+    model = nn.Linear(1, 4)
+    run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+    for x, y in run.loop(DataLoader(_data(16), batch_size=8), epochs=1):
+        run.backward(nn.functional.cross_entropy(model(x), y % 4))
+        run.step()
+    p = run.profiler
+    p.created_at, p.first_batch_at, p.finished_at = 0.0, 100.0, 100.0 + train_s
+    capsys.readouterr()
+    run.report()
+    return capsys.readouterr().out
+
+
+def test_report_explains_withheld_tips_in_a_short_run(tmp_path, cpu_only, capsys):
+    out = _report_with_timeline(tmp_path, capsys, train_s=30.0)
+    assert out.count("Tuning tips (data-wait, batch size, setup time)") == 1
+    assert "this run was 30s. Not shown." in out
+    assert "Setup took" not in out and "  tips:" not in out  # the tip itself stays hidden
+
+
+def test_report_shows_the_tip_not_the_note_from_120s(tmp_path, cpu_only, capsys):
+    out = _report_with_timeline(tmp_path, capsys, train_s=120.0)
+    assert "Setup took" in out
+    assert "Tuning tips (data-wait" not in out and "Not shown" not in out
+
+
+def test_report_has_no_note_when_nothing_was_withheld(tmp_path, cpu_only, capsys):
+    import efficio
+
+    run = efficio.Run(checkpoint_dir=str(tmp_path), verbose=False)
+    model = nn.Linear(1, 4)
+    run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+    for x, y in run.loop(DataLoader(_data(16), batch_size=8), epochs=1):
+        run.backward(nn.functional.cross_entropy(model(x), y % 4))
+        run.step()
+    p = run.profiler
+    p.created_at, p.first_batch_at, p.finished_at = 0.0, 1.0, 31.0  # setup 3%: no tip anyway
+    capsys.readouterr()
+    run.report()
+    out = capsys.readouterr().out
+    assert "Tuning tips" not in out and "Setup took" not in out
 
 
 def test_loop_twice_does_not_repeat_optimizations(tmp_path, cpu_only, four_cores, monkeypatch):

@@ -184,3 +184,29 @@ def tips(
             "in later sessions."
         )
     return out
+
+
+def withheld_tips_note(
+    data_wait_pct,
+    gpu_util_pct,
+    setup_pct,
+    train_s,
+    on_gpu=True,
+    gpu_loader_fits=False,
+    image_files=False,
+):
+    """One line saying why tips were left out, or None. It is given only for a short run
+    (train_s below MIN_TRAIN_S_FOR_TIPS) where at least one of the data-wait, batch-size or
+    setup-time tips would have fired in a long run. The dataset tips (GPULoader, ImageCache)
+    are not affected and are not mentioned."""
+    if train_s is None or train_s >= MIN_TRAIN_S_FOR_TIPS:
+        return None
+    args = (data_wait_pct, gpu_util_pct, setup_pct)
+    kwargs = dict(on_gpu=on_gpu, gpu_loader_fits=gpu_loader_fits, image_files=image_files)
+    if len(tips(*args, train_s=None, **kwargs)) == len(tips(*args, train_s=train_s, **kwargs)):
+        return None
+    return (
+        f"Tuning tips (data-wait, batch size, setup time) need about "
+        f"{MIN_TRAIN_S_FOR_TIPS:.0f}s of training to be reliable; this run was "
+        f"{train_s:.0f}s. Not shown."
+    )
