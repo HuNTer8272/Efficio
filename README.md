@@ -22,7 +22,7 @@ for x, y in run.loop(train_loader, epochs=20):        # batches arrive on the GP
 run.report()                                          # time split, GPU use and tips
 ```
 
-Run the same cell again after a disconnect or in a new session and training continues from the last checkpoint. A complete CIFAR-10 example is in the [Colab quick-start notebook](https://github.com/HuNTer8272/Efficio/blob/main/examples/colab_quickstart.ipynb).
+Run the same cell again after a disconnect or in a new session and training continues from the last checkpoint. A complete CIFAR-10 example is in the [Colab quick-start notebook](https://github.com/HuNTer8272/Efficio/blob/main/examples/colab_quickstart.ipynb). If something goes wrong, see [Troubleshooting](https://github.com/HuNTer8272/Efficio/blob/main/docs/TROUBLESHOOTING.md).
 
 ## What it does for you
 
