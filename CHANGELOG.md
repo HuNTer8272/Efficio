@@ -2,7 +2,9 @@
 
 All notable changes to Efficio are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.1] - 2026-11-16
+
+Fixes and polish, no new features: CI now also runs on Windows and macOS, pre-commit hooks run ruff, there is a [troubleshooting guide](https://github.com/HuNTer8272/Efficio/blob/main/docs/TROUBLESHOOTING.md), the Colab quick-start notebook explains `budget` and `checkpoint_mode`, and short runs say why some report tips are withheld.
 
 ### Changed
 
@@ -99,6 +101,7 @@ First public release.
 - On Windows and macOS, DataLoader workers are not added automatically.
 - Planned features (light checkpoints, Hub and Drive storage, automatic batch size, pre-flight check, budget planner, auto-shutdown, multi-GPU, notifications, framework adapters) are not included; their modules raise `NotImplementedError`.
 
+[0.2.1]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.2.1
 [0.2.0]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.2.0
 [0.1.1]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.1
 [0.1.0]: https://github.com/HuNTer8272/Efficio/releases/tag/v0.1.0
