@@ -11,13 +11,14 @@ DRIVE_NOT_MOUNTED = (
     "Google Drive is not mounted, so {path} would be on the session's own disk and lost "
     "when the session ends. Mount Drive first (Efficio doesn't do it for you):\n"
     "    from google.colab import drive\n"
-    "    drive.mount('/content/drive')")
+    "    drive.mount('/content/drive')"
+)
 
 
 def _replace(src, dst):
     try:
         os.replace(src, dst)
-    except OSError:              # some network/FUSE folders can't rename over a file
+    except OSError:  # some network/FUSE folders can't rename over a file
         if os.path.exists(dst):
             os.remove(dst)
         os.rename(src, dst)
@@ -59,8 +60,11 @@ class LocalFolder(Storage):
     def list(self):
         if not os.path.isdir(self.path):
             return []
-        return sorted(n for n in os.listdir(self.path)
-                      if not n.endswith(".partial") and os.path.isfile(os.path.join(self.path, n)))
+        return sorted(
+            n
+            for n in os.listdir(self.path)
+            if not n.endswith(".partial") and os.path.isfile(os.path.join(self.path, n))
+        )
 
     def delete(self, name):
         try:

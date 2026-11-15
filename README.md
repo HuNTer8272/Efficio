@@ -78,8 +78,14 @@ The large-image features (ImageCache, CachedImageDataset, GPU augmentation throu
 ```python
 from efficio import GPULoader, gpu_augment as A
 
-loader = GPULoader.from_torchvision(train_set, batch_size=128, shuffle=True, transform=A.Compose(
-    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))
+loader = GPULoader.from_torchvision(
+    train_set,
+    batch_size=128,
+    shuffle=True,
+    transform=A.Compose(
+        [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]
+    ),
+)
 for x, y in run.loop(loader, epochs=20):
     ...
 ```
@@ -94,10 +100,18 @@ import efficio
 from efficio import CachedImageDataset, ImageCache, gpu_augment as A
 
 ImageCache.build(paths, labels, "/content/cache/train", size=(224, 224), grayscale=True)
-loader = DataLoader(CachedImageDataset("/content/cache/train"), batch_size=64, shuffle=True,
-                    num_workers=2)
-augment = A.Compose([A.ToFloat(), A.RepeatChannels(3), A.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                     A.RandomHorizontalFlip(), A.Normalize(mean, std)])
+loader = DataLoader(
+    CachedImageDataset("/content/cache/train"), batch_size=64, shuffle=True, num_workers=2
+)
+augment = A.Compose(
+    [
+        A.ToFloat(),
+        A.RepeatChannels(3),
+        A.RandomResizedCrop(224, scale=(0.8, 1.0)),
+        A.RandomHorizontalFlip(),
+        A.Normalize(mean, std),
+    ]
+)
 for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)):
     ...
 ```
@@ -108,10 +122,10 @@ for x, y in run.loop(loader, epochs=10, gpu_transform=efficio.on_inputs(augment)
 
 ```python
 run.backward(loss)
-run.clip_grad_norm(1.0)          # between backward and step; real units, also with fp16
+run.clip_grad_norm(1.0)  # between backward and step; real units, also with fp16
 run.step()
 
-with run.evaluate_mode():        # eval mode, no gradients, mixed precision
+with run.evaluate_mode():  # eval mode, no gradients, mixed precision
     val_loss = loss_fn(model(x_val), y_val)
 ```
 
@@ -120,9 +134,9 @@ with run.evaluate_mode():        # eval mode, no gradients, mixed precision
 ```python
 run = efficio.Run(
     budget="2h",
-    checkpoint_mode="exact",        # or "light" (~2x smaller) or "smallest" (~3x smaller)
-    save_trainable_only="auto",     # "auto": skip frozen parameters when some are frozen
-    async_save=True,                # periodic saves written in the background
+    checkpoint_mode="exact",  # or "light" (~2x smaller) or "smallest" (~3x smaller)
+    save_trainable_only="auto",  # "auto": skip frozen parameters when some are frozen
+    async_save=True,  # periodic saves written in the background
 )
 ```
 
@@ -163,7 +177,7 @@ Checkpoints written by Efficio 0.1.x still load and resume. The end-of-run repor
 When a Colab or Kaggle session ends, checkpoints on its disk are lost. With `storage=`, every checkpoint is also copied to a place that lasts. A new session, on the same platform or the other one, continues from there.
 
 ```python
-run = efficio.Run(budget="2h", storage="hf://your-username/my-run")     # a private HF repo
+run = efficio.Run(budget="2h", storage="hf://your-username/my-run")  # a private HF repo
 # or on Colab, after you have mounted Google Drive yourself:
 run = efficio.Run(budget="2h", storage="/content/drive/MyDrive/my-run")
 ```
@@ -197,11 +211,11 @@ run = efficio.Run(budget="11h30m", storage="hf://your-username/my-run")
 model, optimizer = run.prepare(model, optimizer)
 for x, y in run.loop(train_loader, epochs=50):
     ...
-run.report()        # stopped by the budget; the stop checkpoint is uploaded first
+run.report()  # stopped by the budget; the stop checkpoint is uploaded first
 
 # Later on Colab (HF_TOKEN secret with notebook access)
 run = efficio.Run(budget="3h", storage="hf://your-username/my-run")
-model, optimizer = run.prepare(model, optimizer)   # downloads the latest checkpoint, resumes
+model, optimizer = run.prepare(model, optimizer)  # downloads the latest checkpoint, resumes
 for x, y in run.loop(train_loader, epochs=50):
     ...
 run.report()

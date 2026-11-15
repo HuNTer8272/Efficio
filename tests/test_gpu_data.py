@@ -16,7 +16,7 @@ CPU = HardwareInfo("local", "cpu")
 
 
 def _images(n=50, h=8, w=8, c=3):
-    x = torch.randint(0, 256, (n, h, w, c), dtype=torch.uint8)    # NHWC, like CIFAR's .data
+    x = torch.randint(0, 256, (n, h, w, c), dtype=torch.uint8)  # NHWC, like CIFAR's .data
     return x, torch.arange(n)
 
 
@@ -27,6 +27,7 @@ def _loader(n=50, batch_size=8, **kw):
 
 # ---------- GPULoader ----------
 
+
 def test_batches_shapes_and_length():
     loader = _loader(50, 8)
     batches = list(loader)
@@ -35,7 +36,7 @@ def test_batches_shapes_and_length():
     assert x.shape == (8, 3, 8, 8) and x.dtype == torch.float32
     assert 0.0 <= x.min() and x.max() <= 1.0
     assert y.shape == (8,)
-    assert batches[-1][0].shape[0] == 2                     # 50 = 6 * 8 + 2
+    assert batches[-1][0].shape[0] == 2  # 50 = 6 * 8 + 2
 
 
 def test_every_sample_once_per_epoch_and_values_match():
@@ -85,7 +86,7 @@ def test_set_start_batch_skips():
     assert len(rest) == 3
     assert all(torch.equal(a, b) for a, b in zip(rest, full[4:]))
     loader.set_epoch(1)
-    assert len(list(loader)) == 7                           # one-shot: back to the start
+    assert len(list(loader)) == 7  # one-shot: back to the start
 
 
 def test_layouts():
@@ -96,7 +97,7 @@ def test_layouts():
     assert next(iter(nchw))[0].shape == (2, 3, 8, 8)
     assert next(iter(gray))[0].shape == (2, 1, 28, 28)
     xb = next(iter(feats))[0]
-    assert torch.equal(xb, feats.x[:2])                     # non-image data is passed as is
+    assert torch.equal(xb, feats.x[:2])  # non-image data is passed as is
 
 
 def test_transform_applied():
@@ -108,8 +109,8 @@ def test_memory_check(monkeypatch):
     monkeypatch.setattr(gd, "_free_gpu_bytes", lambda device: 1000)
     with pytest.raises(ValueError, match="normal torch DataLoader"):
         gd._check_memory(400, torch.device("cuda"))
-    gd._check_memory(300, torch.device("cuda"))             # 30% of free: still allowed
-    gd._check_memory(10**12, torch.device("cpu"))           # no limit on CPU
+    gd._check_memory(300, torch.device("cuda"))  # 30% of free: still allowed
+    gd._check_memory(10**12, torch.device("cpu"))  # no limit on CPU
 
 
 def test_bad_inputs():
@@ -121,9 +122,11 @@ def test_bad_inputs():
 
 # ---------- from_torchvision ----------
 
+
 def test_from_torchvision_fake_dataset():
     import numpy as np
-    data = np.random.randint(0, 256, (20, 8, 8, 3), dtype=np.uint8)    # CIFAR: numpy NHWC
+
+    data = np.random.randint(0, 256, (20, 8, 8, 3), dtype=np.uint8)  # CIFAR: numpy NHWC
     fake = types.SimpleNamespace(data=data, targets=list(range(20)), transform=None)
     loader = GPULoader.from_torchvision(fake, batch_size=5, device="cpu", shuffle=False)
     x, y = next(iter(loader))
@@ -132,8 +135,11 @@ def test_from_torchvision_fake_dataset():
 
 
 def test_from_torchvision_warns_about_ignored_transform():
-    fake = types.SimpleNamespace(data=torch.zeros(4, 8, 8, dtype=torch.uint8),
-                                 targets=torch.arange(4), transform=lambda img: img)
+    fake = types.SimpleNamespace(
+        data=torch.zeros(4, 8, 8, dtype=torch.uint8),
+        targets=torch.arange(4),
+        transform=lambda img: img,
+    )
     with pytest.warns(UserWarning, match="ignores the dataset's own transform"):
         GPULoader.from_torchvision(fake, batch_size=2, device="cpu")
 
@@ -145,6 +151,7 @@ def test_from_torchvision_needs_data_and_targets():
 
 # ---------- gpu_augment ----------
 
+
 def test_random_crop_shape_and_content():
     x = torch.rand(6, 3, 8, 8)
     out = A.random_crop(x, 8, padding=2)
@@ -152,15 +159,15 @@ def test_random_crop_shape_and_content():
     # Every crop is a window of the zero-padded image
     padded = nn.functional.pad(x, (2, 2, 2, 2))
     for n in range(6):
-        windows = padded[n].unfold(1, 8, 1).unfold(2, 8, 1)          # (C, 5, 5, 8, 8)
+        windows = padded[n].unfold(1, 8, 1).unfold(2, 8, 1)  # (C, 5, 5, 8, 8)
         assert any(torch.equal(windows[:, i, j], out[n]) for i in range(5) for j in range(5))
     assert A.random_crop(x, 4).shape == (6, 3, 4, 4)
-    assert torch.equal(A.random_crop(x, 8), x)                       # no padding, full size
+    assert torch.equal(A.random_crop(x, 8), x)  # no padding, full size
 
 
 def test_random_crop_offsets_per_sample():
     torch.manual_seed(0)
-    x = torch.rand(1, 3, 8, 8).expand(64, 3, 8, 8).contiguous()      # identical images
+    x = torch.rand(1, 3, 8, 8).expand(64, 3, 8, 8).contiguous()  # identical images
     out = A.random_crop(x, 8, padding=4)
     assert len({tuple(o.flatten().tolist()) for o in out}) > 1
 
@@ -172,7 +179,7 @@ def test_flip():
     torch.manual_seed(0)
     out = A.random_horizontal_flip(torch.rand(1, 1, 2, 2).expand(200, 1, 2, 2), p=0.5)
     flipped = (out[:, 0, 0, 0] != out[0, 0, 0, 0]).sum().item()
-    assert 0 < flipped < 200                                          # chosen per sample
+    assert 0 < flipped < 200  # chosen per sample
 
 
 def test_normalize_and_compose():
@@ -188,9 +195,11 @@ def test_normalize_and_compose():
 
 # ---------- resume through Run.loop ----------
 
+
 @pytest.fixture
 def cpu_only(monkeypatch):
     import efficio.run
+
     monkeypatch.setattr(efficio.run, "detect_hardware", lambda: CPU)
 
 
@@ -198,13 +207,20 @@ def _train(ckpt_dir, epochs, stop_after=None):
     """Train through Run with a shuffled, augmented GPULoader. With stop_after, save and
     quit early like a dying session."""
     import efficio
+
     torch.manual_seed(0)
     gen = torch.Generator().manual_seed(1)
     x = torch.randint(0, 256, (60, 8, 8, 3), dtype=torch.uint8, generator=gen)
     y = torch.randint(0, 4, (60,), generator=gen)
     loader = GPULoader.from_tensors(
-        x, y, batch_size=8, shuffle=True, device="cpu", seed=0,
-        transform=A.Compose([A.RandomCrop(8, padding=2), A.RandomHorizontalFlip()]))
+        x,
+        y,
+        batch_size=8,
+        shuffle=True,
+        device="cpu",
+        seed=0,
+        transform=A.Compose([A.RandomCrop(8, padding=2), A.RandomHorizontalFlip()]),
+    )
     model = nn.Sequential(nn.Flatten(), nn.Linear(3 * 8 * 8, 4))
     opt = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9)
     run = efficio.Run(checkpoint_dir=str(ckpt_dir), verbose=False)
@@ -221,7 +237,7 @@ def _train(ckpt_dir, epochs, stop_after=None):
 def test_resume_with_gpu_loader_matches_uninterrupted(tmp_path, cpu_only):
     full_run, full_model = _train(tmp_path / "full", epochs=3)
 
-    _train(tmp_path / "split", epochs=3, stop_after=11)      # stops in the middle of epoch 2
+    _train(tmp_path / "split", epochs=3, stop_after=11)  # stops in the middle of epoch 2
     resumed, model = _train(tmp_path / "split", epochs=3)
 
     assert resumed._resumed_from == (1, 3)

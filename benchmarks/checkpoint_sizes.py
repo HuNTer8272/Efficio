@@ -47,6 +47,7 @@ MODES = ("exact", "light", "smallest")
 # ---------------------------------------------------------------- setups
 def resnet18(num_classes=10):
     import torchvision
+
     model = torchvision.models.resnet18(num_classes=num_classes)
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = nn.Identity()
@@ -77,7 +78,7 @@ def _image_data(n):
 def _token_data(n):
     gen = torch.Generator().manual_seed(123)
     x = torch.randint(0, 8000, (n, 64), generator=gen)
-    return x, x[:, :4].sum(1) % 10               # learnable: depends on the first tokens
+    return x, x[:, :4].sum(1) % 10  # learnable: depends on the first tokens
 
 
 def make_setup(name, device, quick):
@@ -122,7 +123,7 @@ def evaluate(model, x, y):
     """(loss, accuracy %) on the whole set in eval mode."""
     model.eval()
     with torch.no_grad():
-        out = torch.cat([model(x[i:i + 128]) for i in range(0, len(x), 128)]).float()
+        out = torch.cat([model(x[i : i + 128]) for i in range(0, len(x), 128)]).float()
     model.train()
     accuracy = 100.0 * (out.argmax(1) == y).float().mean().item()
     return nn.functional.cross_entropy(out, y).item(), accuracy
@@ -154,16 +155,25 @@ def with_noise(state_dict, rel=1e-6):
 
 
 def max_weight_diff(a, b):
-    return max(((x.float() - y.float()).abs().max().item()
-                for x, y in zip(a.state_dict().values(), b.state_dict().values())
-                if x.is_floating_point()), default=0.0)
+    return max(
+        (
+            (x.float() - y.float()).abs().max().item()
+            for x, y in zip(a.state_dict().values(), b.state_dict().values())
+            if x.is_floating_point()
+        ),
+        default=0.0,
+    )
 
 
 # ---------------------------------------------------------------- measurements
 def sizes_and_times(name, mode, trainable_only, device, quick, tmp, model, opt):
     def manager(sub, async_save=False):
-        return CheckpointManager(os.path.join(tmp, f"{name}_{mode}_{trainable_only}_{sub}"),
-                                 mode=mode, trainable_only=trainable_only, async_save=async_save)
+        return CheckpointManager(
+            os.path.join(tmp, f"{name}_{mode}_{trainable_only}_{sub}"),
+            mode=mode,
+            trainable_only=trainable_only,
+            async_save=async_save,
+        )
 
     sync_mgr = manager("sync")
     sync(device)
@@ -177,9 +187,12 @@ def sizes_and_times(name, mode, trainable_only, device, quick, tmp, model, opt):
     bg_mgr.save(TrainState(step=TRAIN_STEPS), model, opt, blocking=False)
     blocked_s = time.perf_counter() - start
     bg_mgr.wait()
-    return {"file_mb": round(os.path.getsize(path) / 1024**2, 2),
-            "sync_save_s": round(sync_s, 3), "background_blocking_s": round(blocked_s, 3),
-            "background_write_s": round(bg_mgr.stats["background_s"], 3)}
+    return {
+        "file_mb": round(os.path.getsize(path) / 1024**2, 2),
+        "sync_save_s": round(sync_s, 3),
+        "background_blocking_s": round(blocked_s, 3),
+        "background_write_s": round(bg_mgr.stats["background_s"], 3),
+    }
 
 
 def resume_quality(name, mode, device, quick, tmp, model, opt, x, y, resume_steps):
@@ -231,40 +244,70 @@ def main():
             variants = [(m, False) for m in MODES] + ([("exact", True)] if frozen else [])
             for mode, trainable_only in variants:
                 kind = mode + (" (trainable only)" if trainable_only else "")
-                row = {"setup": name, "kind": kind,
-                       **sizes_and_times(name, mode, trainable_only, device, args.quick, tmp,
-                                         model, opt)}
+                row = {
+                    "setup": name,
+                    "kind": kind,
+                    **sizes_and_times(
+                        name, mode, trainable_only, device, args.quick, tmp, model, opt
+                    ),
+                }
                 if not trainable_only:
-                    row.update(resume_quality(name, mode, device, args.quick, tmp, model, opt,
-                                              x, y, resume_steps))
+                    row.update(
+                        resume_quality(
+                            name, mode, device, args.quick, tmp, model, opt, x, y, resume_steps
+                        )
+                    )
                 rows.append(row)
                 print(json.dumps(row))
-            rows.append({"setup": name, "kind": "noise baseline",
-                         **resume_quality(name, None, device, args.quick, tmp, model, opt,
-                                          x, y, resume_steps)})
+            rows.append(
+                {
+                    "setup": name,
+                    "kind": "noise baseline",
+                    **resume_quality(
+                        name, None, device, args.quick, tmp, model, opt, x, y, resume_steps
+                    ),
+                }
+            )
             print(json.dumps(rows[-1]))
 
     print()
-    header = (f"{'setup':<22}{'kind':<26}{'file MB':>8}{'sync s':>8}{'bg blk s':>9}"
-              f"{'max w diff':>11}{'dloss 1':>9}{'dacc 1':>8}{'dloss 3':>9}{'dacc 3':>8}")
+    header = (
+        f"{'setup':<22}{'kind':<26}{'file MB':>8}{'sync s':>8}{'bg blk s':>9}"
+        f"{'max w diff':>11}{'dloss 1':>9}{'dacc 1':>8}{'dloss 3':>9}{'dacc 3':>8}"
+    )
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r['setup']:<22}{r['kind']:<26}{_f(r.get('file_mb'), '.2f'):>8}"
-              f"{_f(r.get('sync_save_s'), '.3f'):>8}{_f(r.get('background_blocking_s'), '.3f'):>9}"
-              f"{_f(r.get('max_weight_diff_after_load'), '.1e'):>11}"
-              f"{_f(r.get('loss_diff_1'), '.4f'):>9}{_f(r.get('acc_diff_1'), '.1f'):>8}"
-              f"{_f(r.get('loss_diff_3'), '.4f'):>9}{_f(r.get('acc_diff_3'), '.1f'):>8}")
-    print(f"\ndloss/dacc 1: |loss| and |accuracy %| difference to an uninterrupted run after one "
-          f"resume and {resume_steps} more steps; 3: after three consecutive resumes. "
-          "noise baseline: an exact resume with 1e-6 relative weight noise (normal variation).")
+        print(
+            f"{r['setup']:<22}{r['kind']:<26}{_f(r.get('file_mb'), '.2f'):>8}"
+            f"{_f(r.get('sync_save_s'), '.3f'):>8}{_f(r.get('background_blocking_s'), '.3f'):>9}"
+            f"{_f(r.get('max_weight_diff_after_load'), '.1e'):>11}"
+            f"{_f(r.get('loss_diff_1'), '.4f'):>9}{_f(r.get('acc_diff_1'), '.1f'):>8}"
+            f"{_f(r.get('loss_diff_3'), '.4f'):>9}{_f(r.get('acc_diff_3'), '.1f'):>8}"
+        )
+    print(
+        f"\ndloss/dacc 1: |loss| and |accuracy %| difference to an uninterrupted run after one "
+        f"resume and {resume_steps} more steps; 3: after three consecutive resumes. "
+        "noise baseline: an exact resume with 1e-6 relative weight noise (normal variation)."
+    )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"checkpoint_sizes_{detect_platform()}_{stamp}.json"
-    out.write_text(json.dumps({"device": str(device), "gpu": gpu, "torch": torch.__version__,
-                               "quick": args.quick, "train_steps": TRAIN_STEPS,
-                               "resume_steps": resume_steps, "rows": rows}, indent=2))
+    out.write_text(
+        json.dumps(
+            {
+                "device": str(device),
+                "gpu": gpu,
+                "torch": torch.__version__,
+                "quick": args.quick,
+                "train_steps": TRAIN_STEPS,
+                "resume_steps": resume_steps,
+                "rows": rows,
+            },
+            indent=2,
+        )
+    )
     print(f"\nsaved {out}")
 
 

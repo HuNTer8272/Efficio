@@ -21,7 +21,7 @@ from torch import nn
 BENCHMARK = "image-folder"
 IMAGE_SIZE = 224
 BATCH_SIZE = 64
-NUM_WORKERS = 2              # what a typical notebook user sets; Efficio may tune it
+NUM_WORKERS = 2  # what a typical notebook user sets; Efficio may tune it
 VAL_FRACTION = 0.1
 N_FAKE_LABELS = 5
 IMAGENET_MEAN, IMAGENET_STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
@@ -35,14 +35,20 @@ BRIGHTNESS = CONTRAST = 0.1
 
 
 def add_args(parser):
-    parser.add_argument("--fake", action="store_true",
-                        help="generate grayscale PNGs instead of using --images/--labels")
+    parser.add_argument(
+        "--fake",
+        action="store_true",
+        help="generate grayscale PNGs instead of using --images/--labels",
+    )
     parser.add_argument("--fake-count", type=int, default=5000)
     parser.add_argument("--fake-size", type=int, default=512, help="side of the fake PNGs")
     parser.add_argument("--images", help="folder with the image files")
     parser.add_argument("--labels", help="CSV: filename + one 0/1 column per label")
-    parser.add_argument("--data-dir", default="./data/image_folder",
-                        help="where fake images (and the Efficio cache) are written")
+    parser.add_argument(
+        "--data-dir",
+        default="./data/image_folder",
+        help="where fake images (and the Efficio cache) are written",
+    )
     parser.add_argument("--limit", type=int, default=None, help="use only the first N images")
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--size", type=int, default=IMAGE_SIZE, help="training image size")
@@ -53,6 +59,7 @@ def add_args(parser):
 def _fake_image(args):
     """One smooth random grayscale image with fine noise, roughly like a scan."""
     from PIL import Image
+
     path, size, seed = args
     rng = np.random.default_rng(seed)
     low = Image.fromarray(rng.integers(0, 256, (16, 16), dtype=np.uint8), "L")
@@ -95,10 +102,10 @@ def load_dataset(args):
     with open(csv_path, newline="") as f:
         rows = list(csv.reader(f))[1:]
     if args.limit:
-        rows = rows[:args.limit]
+        rows = rows[: args.limit]
     paths = [os.path.join(folder, r[0]) for r in rows]
     labels = np.array([[float(v) for v in r[1:]] for r in rows], dtype=np.float32)
-    split = int(len(paths) * (1 - VAL_FRACTION))       # fixed split: same in both scripts
+    split = int(len(paths) * (1 - VAL_FRACTION))  # fixed split: same in both scripts
     return paths[:split], labels[:split], paths[split:], labels[split:]
 
 
@@ -118,8 +125,12 @@ def mean_auroc(scores, targets):
     for k in range(targets.shape[1]):
         pos, neg = scores[targets[:, k] == 1, k], scores[targets[:, k] == 0, k]
         if len(pos) and len(neg):
-            aucs.append(((pos[:, None] > neg[None, :]).float().mean()
-                         + 0.5 * (pos[:, None] == neg[None, :]).float().mean()).item())
+            aucs.append(
+                (
+                    (pos[:, None] > neg[None, :]).float().mean()
+                    + 0.5 * (pos[:, None] == neg[None, :]).float().mean()
+                ).item()
+            )
     return sum(aucs) / len(aucs) if aucs else float("nan")
 
 

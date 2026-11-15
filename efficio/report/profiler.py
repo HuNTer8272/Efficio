@@ -9,9 +9,9 @@ import subprocess
 import threading
 import time
 
-DATA_WAIT_TIP_PCT = 10.0    # above this, the GPU is waiting for data
-LOW_UTIL_PCT = 85.0         # below this (with little data-wait), the GPU has spare capacity
-SETUP_TIP_PCT = 10.0        # setup above this share of the total is worth pointing out
+DATA_WAIT_TIP_PCT = 10.0  # above this, the GPU is waiting for data
+LOW_UTIL_PCT = 85.0  # below this (with little data-wait), the GPU has spare capacity
+SETUP_TIP_PCT = 10.0  # setup above this share of the total is worth pointing out
 MIN_TRAIN_S_FOR_TIPS = 120.0  # shorter runs: setup share and utilization say little
 
 
@@ -109,10 +109,10 @@ class GpuUtilSampler:
             try:
                 out = subprocess.run(self.CMD, capture_output=True, text=True, timeout=5)
                 self.samples.append(float(out.stdout.strip().splitlines()[0]))
-            except FileNotFoundError:   # no nvidia-smi on this machine
+            except FileNotFoundError:  # no nvidia-smi on this machine
                 self.available = False
                 return
-            except Exception:           # anything else: skip this sample, keep training
+            except Exception:  # anything else: skip this sample, keep training
                 pass
             self._stop.wait(self.interval)
 
@@ -125,17 +125,26 @@ class GpuUtilSampler:
 GPU_LOADER_EXAMPLE = (
     "from efficio import GPULoader, gpu_augment as A\n"
     "loader = GPULoader.from_torchvision(train_set, batch_size=128, transform=A.Compose(\n"
-    "    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))")
+    "    [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(mean, std)]))"
+)
 
 IMAGE_CACHE_EXAMPLE = (
     "from efficio import ImageCache, CachedImageDataset\n"
-    "ImageCache.build(paths, labels, \"cache/train\", size=(224, 224))   # once\n"
-    "loader = DataLoader(CachedImageDataset(\"cache/train\"), batch_size=64, shuffle=True)\n"
-    "for x, y in run.loop(loader, epochs, gpu_transform=efficio.on_inputs(augment)): ...")
+    'ImageCache.build(paths, labels, "cache/train", size=(224, 224))   # once\n'
+    'loader = DataLoader(CachedImageDataset("cache/train"), batch_size=64, shuffle=True)\n'
+    "for x, y in run.loop(loader, epochs, gpu_transform=efficio.on_inputs(augment)): ..."
+)
 
 
-def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=False,
-         image_files=False, train_s=None):
+def tips(
+    data_wait_pct,
+    gpu_util_pct,
+    setup_pct,
+    on_gpu=True,
+    gpu_loader_fits=False,
+    image_files=False,
+    train_s=None,
+):
     """Plain-language advice from the measured numbers. gpu_util_pct may be None (no GPU data).
     The data-wait and utilization tips are about keeping a GPU busy, so they need on_gpu.
     gpu_loader_fits: the training set is a torchvision dataset small enough for GPULoader.
@@ -147,22 +156,31 @@ def tips(data_wait_pct, gpu_util_pct, setup_pct, on_gpu=True, gpu_loader_fits=Fa
     long_enough = train_s is None or train_s >= MIN_TRAIN_S_FOR_TIPS
     out = []
     if on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and gpu_loader_fits:
-        out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Your dataset "
-                   "fits in GPU memory, so keep it there and augment on the GPU:\n"
-                   + GPU_LOADER_EXAMPLE)
+        out.append(
+            f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Your dataset "
+            "fits in GPU memory, so keep it there and augment on the GPU:\n" + GPU_LOADER_EXAMPLE
+        )
     elif on_gpu and data_wait_pct > DATA_WAIT_TIP_PCT and image_files:
-        out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time while the CPU "
-                   "decodes and resizes image files. Decode them once into an ImageCache and "
-                   "augment on the GPU:\n" + IMAGE_CACHE_EXAMPLE)
+        out.append(
+            f"The GPU is waiting for data {data_wait_pct:.0f}% of the time while the CPU "
+            "decodes and resizes image files. Decode them once into an ImageCache and "
+            "augment on the GPU:\n" + IMAGE_CACHE_EXAMPLE
+        )
     elif on_gpu and long_enough and data_wait_pct > DATA_WAIT_TIP_PCT:
         # In a short run, worker start-up alone is a large share of the data-wait time
-        out.append(f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Try more "
-                   "DataLoader workers, or lighter CPU preprocessing.")
+        out.append(
+            f"The GPU is waiting for data {data_wait_pct:.0f}% of the time. Try more "
+            "DataLoader workers, or lighter CPU preprocessing."
+        )
     elif on_gpu and long_enough and gpu_util_pct is not None and gpu_util_pct < LOW_UTIL_PCT:
-        out.append(f"GPU utilization is only {gpu_util_pct:.0f}% and data loading is not the "
-                   "bottleneck. A larger batch size may use the GPU better.")
+        out.append(
+            f"GPU utilization is only {gpu_util_pct:.0f}% and data loading is not the "
+            "bottleneck. A larger batch size may use the GPU better."
+        )
     if long_enough and setup_pct > SETUP_TIP_PCT:
-        out.append(f"Setup took {setup_pct:.0f}% of this run. Downloads or preprocessing are "
-                   "using your quota. For images, build an ImageCache once and reuse it "
-                   "in later sessions.")
+        out.append(
+            f"Setup took {setup_pct:.0f}% of this run. Downloads or preprocessing are "
+            "using your quota. For images, build an ImageCache once and reuse it "
+            "in later sessions."
+        )
     return out

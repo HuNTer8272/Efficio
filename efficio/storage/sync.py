@@ -34,10 +34,19 @@ class RemoteCheckpoints:
         self.platform = platform
         self.retries = retries
         self.backoff = backoff
-        self.stats = {"uploads": 0, "upload_s": 0.0, "waited_s": 0.0, "last_file": None,
-                      "last_bytes": None, "last_time": None, "last_ok": None,
-                      "last_error": None, "cleanup_errors": 0, "downloaded": None}
-        self.replace_fingerprints = set()   # other runs' entries dropped at the next upload
+        self.stats = {
+            "uploads": 0,
+            "upload_s": 0.0,
+            "waited_s": 0.0,
+            "last_file": None,
+            "last_bytes": None,
+            "last_time": None,
+            "last_ok": None,
+            "last_error": None,
+            "cleanup_errors": 0,
+            "downloaded": None,
+        }
+        self.replace_fingerprints = set()  # other runs' entries dropped at the next upload
         self._thread = None
         self._current = None
         self._error = None
@@ -49,8 +58,10 @@ class RemoteCheckpoints:
                 return fn(*args)
             except Exception as e:
                 if attempt == self.retries:
-                    raise StorageError(f"{what} failed after {attempt} attempts "
-                                       f"({type(e).__name__}: {self.storage.redact(e)})") from None
+                    raise StorageError(
+                        f"{what} failed after {attempt} attempts "
+                        f"({type(e).__name__}: {self.storage.redact(e)})"
+                    ) from None
                 time.sleep(self.backoff * 2 ** (attempt - 1))
 
     def upload(self, local_path, info, after=None):
@@ -60,8 +71,9 @@ class RemoteCheckpoints:
         self.wait()
         self.check()
         self._current = os.path.basename(local_path)
-        self._thread = threading.Thread(target=self._upload, args=(local_path, dict(info), after),
-                                        name="efficio-upload")
+        self._thread = threading.Thread(
+            target=self._upload, args=(local_path, dict(info), after), name="efficio-upload"
+        )
         self._thread.start()
 
     def _upload(self, local_path, info, after):
@@ -74,25 +86,43 @@ class RemoteCheckpoints:
                 raise StorageError(f"{local_path} was not written, so it was not uploaded")
             size, digest = os.path.getsize(local_path), sha256_file(local_path)
             self._retry(f"uploading {name}", self.storage.upload, local_path, name)
-            entry = {"file": name, **info, "size": size, "sha256": digest,
-                     "platform": self.platform, "time": _now()}
+            entry = {
+                "file": name,
+                **info,
+                "size": size,
+                "sha256": digest,
+                "platform": self.platform,
+                "time": _now(),
+            }
             manifest = self._retry("reading the manifest", self.storage.read_manifest) or {}
-            entries = [e for e in manifest.get("checkpoints", []) if e.get("file") != name
-                       and (e.get("fingerprint") or {}).get("hash")
-                       not in self.replace_fingerprints]
+            entries = [
+                e
+                for e in manifest.get("checkpoints", [])
+                if e.get("file") != name
+                and (e.get("fingerprint") or {}).get("hash") not in self.replace_fingerprints
+            ]
             entries.append(entry)
-            kept = entries[-self.keep:]
+            kept = entries[-self.keep :]
             # The new file counts only once the manifest names it; older files go after that.
-            self._retry("writing the manifest", self.storage.write_manifest,
-                        {"format": MANIFEST_FORMAT, "checkpoints": kept})
-            self.stats.update(uploads=self.stats["uploads"] + 1, last_file=name,
-                              last_bytes=size, last_time=entry["time"], last_ok=True,
-                              last_error=None)
+            self._retry(
+                "writing the manifest",
+                self.storage.write_manifest,
+                {"format": MANIFEST_FORMAT, "checkpoints": kept},
+            )
+            self.stats.update(
+                uploads=self.stats["uploads"] + 1,
+                last_file=name,
+                last_bytes=size,
+                last_time=entry["time"],
+                last_ok=True,
+                last_error=None,
+            )
             self._remove_old({e["file"] for e in kept})
-        except BaseException as e:                  # kept and raised in the main thread
+        except BaseException as e:  # kept and raised in the main thread
             if not isinstance(e, StorageError):
-                e = StorageError(f"uploading {name} failed "
-                                 f"({type(e).__name__}: {self.storage.redact(e)})")
+                e = StorageError(
+                    f"uploading {name} failed ({type(e).__name__}: {self.storage.redact(e)})"
+                )
             self._error = e
             self.stats.update(last_ok=False, last_error=str(e))
         finally:
@@ -135,17 +165,21 @@ class RemoteCheckpoints:
         """Raise the error of a finished upload, if there was one. Doesn't wait."""
         if self._error is not None and not self.pending:
             error, self._error = self._error, None
-            raise RuntimeError(f"Uploading a checkpoint to {self.storage.describe()} failed: "
-                               f"{error}. The local checkpoint is fine; fix the problem and "
-                               "start again to resume from it.") from None
+            raise RuntimeError(
+                f"Uploading a checkpoint to {self.storage.describe()} failed: "
+                f"{error}. The local checkpoint is fine; fix the problem and "
+                "start again to resume from it."
+            ) from None
 
     def finish(self, timeout=None):
         """Wait for the running upload and say how it went, without raising:
         ("ok" | "failed" | "running" | "none", message)."""
         name = self._current
         if not self.wait(timeout):
-            return "running", (f"{name} is still uploading after {timeout:.0f} s; it goes on "
-                               "in the background, keep this session open until it finishes")
+            return "running", (
+                f"{name} is still uploading after {timeout:.0f} s; it goes on "
+                "in the background, keep this session open until it finishes"
+            )
         if self._error is not None:
             error, self._error = self._error, None
             return "failed", str(error)
@@ -158,8 +192,11 @@ class RemoteCheckpoints:
     def entries(self):
         """The checkpoint entries of the manifest, oldest first."""
         manifest = self._retry("reading the manifest", self.storage.read_manifest) or {}
-        return [e for e in manifest.get("checkpoints", [])
-                if CHECKPOINT_NAME.match(str(e.get("file", ""))) and e.get("sha256")]
+        return [
+            e
+            for e in manifest.get("checkpoints", [])
+            if CHECKPOINT_NAME.match(str(e.get("file", ""))) and e.get("sha256")
+        ]
 
     def latest(self):
         """The newest checkpoint entry in the manifest, or None."""
@@ -183,7 +220,8 @@ class RemoteCheckpoints:
                     f"{name} from {self.storage.describe()} doesn't match its sha256 in the "
                     f"manifest (expected {entry['sha256'][:16]}..., got {digest[:16]}...), so "
                     "it was not used. The file is damaged or was changed; delete it and its "
-                    "manifest entry, or start without resume.")
+                    "manifest entry, or start without resume."
+                )
             os.replace(tmp, final)
         finally:
             if os.path.exists(tmp):

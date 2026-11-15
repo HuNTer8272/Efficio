@@ -39,32 +39,51 @@ class ImageFiles(Dataset):
 def main():
     parser = argparse.ArgumentParser()
     ic.add_args(parser)
-    parser.add_argument("--workers", type=int, default=ic.NUM_WORKERS,
-                        help="DataLoader workers (default 2, as in the earlier results)")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=ic.NUM_WORKERS,
+        help="DataLoader workers (default 2, as in the earlier results)",
+    )
     args = parser.parse_args()
     s = args.size
 
     train_paths, train_labels, val_paths, val_labels = ic.load_dataset(args)
-    train_tf = T.Compose([
-        T.Resize((s, s)),
-        T.RandomResizedCrop(s, scale=ic.CROP_SCALE, ratio=ic.CROP_RATIO),
-        T.RandomAffine(ic.AFFINE_DEGREES, translate=ic.AFFINE_TRANSLATE, scale=ic.AFFINE_SCALE),
-        T.RandomHorizontalFlip(),
-        T.ColorJitter(brightness=ic.BRIGHTNESS, contrast=ic.CONTRAST),
-        T.Grayscale(num_output_channels=3),
-        T.ToTensor(),
-        T.Normalize(ic.IMAGENET_MEAN, ic.IMAGENET_STD),
-    ])
-    val_tf = T.Compose([T.Resize((s, s)), T.Grayscale(num_output_channels=3), T.ToTensor(),
-                        T.Normalize(ic.IMAGENET_MEAN, ic.IMAGENET_STD)])
+    train_tf = T.Compose(
+        [
+            T.Resize((s, s)),
+            T.RandomResizedCrop(s, scale=ic.CROP_SCALE, ratio=ic.CROP_RATIO),
+            T.RandomAffine(ic.AFFINE_DEGREES, translate=ic.AFFINE_TRANSLATE, scale=ic.AFFINE_SCALE),
+            T.RandomHorizontalFlip(),
+            T.ColorJitter(brightness=ic.BRIGHTNESS, contrast=ic.CONTRAST),
+            T.Grayscale(num_output_channels=3),
+            T.ToTensor(),
+            T.Normalize(ic.IMAGENET_MEAN, ic.IMAGENET_STD),
+        ]
+    )
+    val_tf = T.Compose(
+        [
+            T.Resize((s, s)),
+            T.Grayscale(num_output_channels=3),
+            T.ToTensor(),
+            T.Normalize(ic.IMAGENET_MEAN, ic.IMAGENET_STD),
+        ]
+    )
 
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader = DataLoader(ImageFiles(train_paths, train_labels, train_tf),
-                              batch_size=args.batch_size, shuffle=True, drop_last=True,
-                              num_workers=args.workers)
-    val_loader = DataLoader(ImageFiles(val_paths, val_labels, val_tf),
-                            batch_size=2 * args.batch_size, num_workers=args.workers)
+    train_loader = DataLoader(
+        ImageFiles(train_paths, train_labels, train_tf),
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=args.workers,
+    )
+    val_loader = DataLoader(
+        ImageFiles(val_paths, val_labels, val_tf),
+        batch_size=2 * args.batch_size,
+        num_workers=args.workers,
+    )
     model = ic.make_model(train_labels.shape[1], args.pretrained).to(device)
     optimizer = ic.make_optimizer(model)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -90,8 +109,9 @@ def main():
             sync()
             epoch_times.append(time.perf_counter() - start)
             train_s += epoch_times[-1]
-            print(f"epoch {epoch + 1}/{args.epochs}: {epoch_times[-1]:.1f} s, "
-                  f"loss {loss.item():.3f}")
+            print(
+                f"epoch {epoch + 1}/{args.epochs}: {epoch_times[-1]:.1f} s, loss {loss.item():.3f}"
+            )
 
     model.eval()
     scores, targets = [], []
@@ -100,19 +120,29 @@ def main():
             scores.append(torch.sigmoid(model(x.to(device))).cpu())
             targets.append(y)
     scores, targets = torch.cat(scores), torch.cat(targets)
-    name = "imagefolder-baseline" + ("" if args.workers == ic.NUM_WORKERS
-                                     else f"-{args.workers}workers")
-    save_results(name, epoch_times,
-                 len(train_loader) * args.batch_size, sampler.average,
-                 ic.label_accuracy(scores, targets),
-                 extra={"benchmark": ic.BENCHMARK, "precision": "fp32",
-                        "batch_size": args.batch_size, "image_size": s,
-                        "num_workers": args.workers,
-                        "train_images": len(train_paths), "fake_data": args.fake,
-                        "data_wait_pct": round(100 * wait_s / train_s, 1),
-                        "val_auroc": round(ic.mean_auroc(scores, targets), 4),
-                        "cache_build_s": 0.0})
+    name = "imagefolder-baseline" + (
+        "" if args.workers == ic.NUM_WORKERS else f"-{args.workers}workers"
+    )
+    save_results(
+        name,
+        epoch_times,
+        len(train_loader) * args.batch_size,
+        sampler.average,
+        ic.label_accuracy(scores, targets),
+        extra={
+            "benchmark": ic.BENCHMARK,
+            "precision": "fp32",
+            "batch_size": args.batch_size,
+            "image_size": s,
+            "num_workers": args.workers,
+            "train_images": len(train_paths),
+            "fake_data": args.fake,
+            "data_wait_pct": round(100 * wait_s / train_s, 1),
+            "val_auroc": round(ic.mean_auroc(scores, targets), 4),
+            "cache_build_s": 0.0,
+        },
+    )
 
 
-if __name__ == "__main__":          # needed for DataLoader workers on Windows/macOS
+if __name__ == "__main__":  # needed for DataLoader workers on Windows/macOS
     main()

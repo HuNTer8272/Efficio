@@ -37,14 +37,15 @@ from torch.utils.data import DataLoader, TensorDataset
 import efficio
 
 CUDA = torch.cuda.is_available()
-FP16_TOL = 1e-2          # max weight difference allowed after a smallest-mode load
-NOISE = 1e-6             # relative weight noise of the noise baseline
-LOSS_FLOOR, ACC_FLOOR = 0.05, 3.0   # smallest allowed final-gap limits (loss, accuracy points)
+FP16_TOL = 1e-2  # max weight difference allowed after a smallest-mode load
+NOISE = 1e-6  # relative weight noise of the noise baseline
+LOSS_FLOOR, ACC_FLOOR = 0.05, 3.0  # smallest allowed final-gap limits (loss, accuracy points)
 VARIANTS = ("exact", "noise", "light", "smallest")
 
 
 def resnet18():
     import torchvision
+
     model = torchvision.models.resnet18(num_classes=10)
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = nn.Identity()
@@ -78,7 +79,7 @@ def train(ckpt_dir, epochs, n, mode, stop_at_step=None, after_prepare=None):
         run.step()
         losses[run.state.step] = loss.item()
         if stop_at_step is not None and run.state.step == stop_at_step:
-            run.budget.safety_margin_seconds = 0          # the time budget runs out now
+            run.budget.safety_margin_seconds = 0  # the time budget runs out now
             run.budget.total_seconds = max(run.budget.elapsed() - 1.0, 1e-6)
     report = io.StringIO()
     with contextlib.redirect_stdout(report):
@@ -103,20 +104,31 @@ def evaluate(model, n):
 
 def weight_diff(a, b):
     """Max difference between two state dicts; compared on the CPU (one may be on the GPU)."""
-    return max((x.detach().float().cpu() - y.detach().float().cpu()).abs().max().item()
-               for x, y in zip(a.values(), b.values()) if x.is_floating_point())
+    return max(
+        (x.detach().float().cpu() - y.detach().float().cpu()).abs().max().item()
+        for x, y in zip(a.values(), b.values())
+        if x.is_floating_point()
+    )
 
 
 def snapshot(run, model):
     """Everything the resume should restore, on CPU."""
-    return {"model": {k: v.detach().float().cpu().clone() for k, v in model.state_dict().items()
-                      if v.is_floating_point()},
-            "opt": copy.deepcopy({k: {n: t.detach().cpu().clone() if torch.is_tensor(t) else t
-                                      for n, t in st.items()}
-                                  for k, st in run.optimizer.state_dict()["state"].items()}),
-            "scaler": run.scaler.state_dict(),
-            "lr": run.scheduler.get_last_lr() if run.scheduler else None,
-            "step": run.state.step}
+    return {
+        "model": {
+            k: v.detach().float().cpu().clone()
+            for k, v in model.state_dict().items()
+            if v.is_floating_point()
+        },
+        "opt": copy.deepcopy(
+            {
+                k: {n: t.detach().cpu().clone() if torch.is_tensor(t) else t for n, t in st.items()}
+                for k, st in run.optimizer.state_dict()["state"].items()
+            }
+        ),
+        "scaler": run.scaler.state_dict(),
+        "lr": run.scheduler.get_last_lr() if run.scheduler else None,
+        "step": run.state.step,
+    }
 
 
 def diagnose(saved, run, model):
@@ -132,7 +144,7 @@ def diagnose(saved, run, model):
             a = st[key].float()
             b = now[pid][key].detach().float().cpu()
             scale = a.abs().max().clamp_min(1e-30)
-            rel = (b - a).abs() / scale               # error relative to the tensor's largest value
+            rel = (b - a).abs() / scale  # error relative to the tensor's largest value
             max_rel = max(max_rel, rel.max().item())
             mean_rel += rel.mean().item()
             count += 1
@@ -143,28 +155,40 @@ def diagnose(saved, run, model):
                 summary["v_halved"] += int((nz & (b < 0.5 * a)).sum())
         if count:
             summary["max_rel_err"][key] = max_rel
-            lines.append(f"  {key:<16} max rel err {max_rel:.2e}, mean {mean_rel / count:.2e} "
-                         f"(relative to each tensor's largest value)")
+            lines.append(
+                f"  {key:<16} max rel err {max_rel:.2e}, mean {mean_rel / count:.2e} "
+                f"(relative to each tensor's largest value)"
+            )
     if summary["v_total"]:
         total = summary["v_total"]
         zeroed, halved = summary["v_zeroed"], summary["v_halved"]
-        lines.append(f"  exp_avg_sq values that came back as 0: {zeroed} of {total} "
-                     f"({100 * zeroed / total:.1f}%); lost more than half their value: "
-                     f"{halved} ({100 * halved / total:.1f}%)")
+        lines.append(
+            f"  exp_avg_sq values that came back as 0: {zeroed} of {total} "
+            f"({100 * zeroed / total:.1f}%); lost more than half their value: "
+            f"{halved} ({100 * halved / total:.1f}%)"
+        )
     sc_now, sc_saved = run.scaler.state_dict(), saved["scaler"]
-    same_scaler = (sc_now.get("scale") == sc_saved.get("scale")
-                   and sc_now.get("_growth_tracker") == sc_saved.get("_growth_tracker"))
+    same_scaler = sc_now.get("scale") == sc_saved.get("scale") and sc_now.get(
+        "_growth_tracker"
+    ) == sc_saved.get("_growth_tracker")
     lr_now = run.scheduler.get_last_lr() if run.scheduler else None
     adam_steps = {float(st["step"]) for st in now.values() if "step" in st}
-    lines.append(f"  GradScaler scale/growth tracker {sc_now.get('scale')}/"
-                 f"{sc_now.get('_growth_tracker')} vs saved {sc_saved.get('scale')}/"
-                 f"{sc_saved.get('_growth_tracker')}: {'match' if same_scaler else 'DIFFER'}")
-    lines.append(f"  scheduler last LR {lr_now} vs saved {saved['lr']}: "
-                 f"{'match' if lr_now == saved['lr'] else 'DIFFER'}")
-    lines.append(f"  step {run.state.step} vs saved {saved['step']}; optimizer step counts "
-                 f"{sorted(adam_steps)}")
-    summary["exact_meta"] = (same_scaler and lr_now == saved["lr"]
-                             and run.state.step == saved["step"])
+    lines.append(
+        f"  GradScaler scale/growth tracker {sc_now.get('scale')}/"
+        f"{sc_now.get('_growth_tracker')} vs saved {sc_saved.get('scale')}/"
+        f"{sc_saved.get('_growth_tracker')}: {'match' if same_scaler else 'DIFFER'}"
+    )
+    lines.append(
+        f"  scheduler last LR {lr_now} vs saved {saved['lr']}: "
+        f"{'match' if lr_now == saved['lr'] else 'DIFFER'}"
+    )
+    lines.append(
+        f"  step {run.state.step} vs saved {saved['step']}; optimizer step counts "
+        f"{sorted(adam_steps)}"
+    )
+    summary["exact_meta"] = (
+        same_scaler and lr_now == saved["lr"] and run.state.step == saved["step"]
+    )
     return lines, summary
 
 
@@ -186,8 +210,9 @@ def run_variant(variant, tmp, epochs, n, stop_at, ref):
     info = {}
 
     def after_prepare(run, model):
-        info["diff"] = weight_diff({k: v for k, v in model.state_dict().items()
-                                    if v.is_floating_point()}, saved["model"])
+        info["diff"] = weight_diff(
+            {k: v for k, v in model.state_dict().items() if v.is_floating_point()}, saved["model"]
+        )
         info["lines"], info["summary"] = diagnose(saved, run, model)
         if variant == "noise":
             add_noise(model, NOISE)
@@ -197,24 +222,34 @@ def run_variant(variant, tmp, epochs, n, stop_at, ref):
     ref_losses, ref_loss, ref_acc = ref["losses"], ref["loss"], ref["acc"]
 
     print(f"\n=== {variant} (checkpoint_mode={mode!r})")
-    print(f"stopped at step {stopped.state.step} (epoch {stopped.state.epoch}, batch "
-          f"{stopped.state.batch_in_epoch}); resumed from epoch/batch {resumed._resumed_from}; "
-          f"ended at step {resumed.state.step} of {ref['steps']}")
+    print(
+        f"stopped at step {stopped.state.step} (epoch {stopped.state.epoch}, batch "
+        f"{stopped.state.batch_in_epoch}); resumed from epoch/batch {resumed._resumed_from}; "
+        f"ended at step {resumed.state.step} of {ref['steps']}"
+    )
     print(f"weights right after loading: max difference {info['diff']:.2e}")
     print("state right after loading:")
     print("\n".join(info["lines"]))
     first = sorted(losses)[:10]
     print("loss for the first 10 steps after resume (resumed / uninterrupted):")
     print("  " + "  ".join(f"{s}: {losses[s]:.4f}/{ref_losses[s]:.4f}" for s in first))
-    print(f"final loss {loss:.4f} (uninterrupted {ref_loss:.4f}, gap {abs(loss - ref_loss):.4f}); "
-          f"accuracy {acc:.1f}% (uninterrupted {ref_acc:.1f}%, gap {abs(acc - ref_acc):.1f})")
-    print("".join(line + "\n" for line in report.splitlines()
-                  if "checkpoint mode" in line or "save time" in line), end="")
+    print(
+        f"final loss {loss:.4f} (uninterrupted {ref_loss:.4f}, gap {abs(loss - ref_loss):.4f}); "
+        f"accuracy {acc:.1f}% (uninterrupted {ref_acc:.1f}%, gap {abs(acc - ref_acc):.1f})"
+    )
+    print(
+        "".join(
+            line + "\n"
+            for line in report.splitlines()
+            if "checkpoint mode" in line or "save time" in line
+        ),
+        end="",
+    )
 
     checks = {
         "stopped by the budget mid-epoch": stopped.should_stop
-                                           and stopped.state.step == stop_at + 1
-                                           and stopped.state.batch_in_epoch > 0,
+        and stopped.state.step == stop_at + 1
+        and stopped.state.batch_in_epoch > 0,
         f"{mode} checkpoint written": saved_mode == mode,
         "resumed from that checkpoint": resumed._resumed_from is not None,
         "same final step": resumed.state.step == ref["steps"],
@@ -228,17 +263,20 @@ def run_variant(variant, tmp, epochs, n, stop_at, ref):
         checks["final loss identical to the uninterrupted run"] = loss == ref_loss
     if variant in ("light", "smallest"):
         total = info["summary"]["v_total"] or 1
-        checks["no second-moment value lost more than half (<= 0.1% of values)"] = \
+        checks["no second-moment value lost more than half (<= 0.1% of values)"] = (
             info["summary"]["v_halved"] / total <= 0.001
+        )
         # Final result against the noise baseline: at most 3x its gap, with a floor so a
         # lucky near-zero noise gap can't fail every run.
         noise = ref["noise_gap"]
         loss_limit = max(3 * noise["loss_gap"], LOSS_FLOOR)
         acc_limit = max(3 * noise["acc_gap"], ACC_FLOOR)
-        checks[f"final loss gap <= {loss_limit:.4f} (3x noise gap, floor {LOSS_FLOOR})"] = \
+        checks[f"final loss gap <= {loss_limit:.4f} (3x noise gap, floor {LOSS_FLOOR})"] = (
             abs(loss - ref_loss) <= loss_limit
-        checks[f"final accuracy gap <= {acc_limit:.1f} points (3x noise gap, floor "
-               f"{ACC_FLOOR})"] = abs(acc - ref_acc) <= acc_limit
+        )
+        checks[
+            f"final accuracy gap <= {acc_limit:.1f} points (3x noise gap, floor {ACC_FLOOR})"
+        ] = abs(acc - ref_acc) <= acc_limit
     return checks, {"loss_gap": abs(loss - ref_loss), "acc_gap": abs(acc - ref_acc)}
 
 
@@ -247,11 +285,11 @@ def main():
     parser.add_argument("--quick", action="store_true", help="small run (CPU smoke test)")
     parser.add_argument("--n", type=int, help="number of samples (default 4096, quick 256)")
     parser.add_argument("--epochs", type=int, help="epochs (default 3, quick 2)")
-    args, _ = parser.parse_known_args()          # a notebook kernel passes its own arguments
+    args, _ = parser.parse_known_args()  # a notebook kernel passes its own arguments
     n, epochs = (256, 2) if args.quick else (4096, 3)
     n, epochs = args.n or n, args.epochs or epochs
     steps_per_epoch = n // 64
-    stop_at = steps_per_epoch + steps_per_epoch // 2              # middle of epoch 2
+    stop_at = steps_per_epoch + steps_per_epoch // 2  # middle of epoch 2
     print(f"efficio {efficio.__version__} from {os.path.dirname(efficio.__file__)}")
     print(f"torch {torch.__version__}, GPU: {torch.cuda.get_device_name(0) if CUDA else 'none'}")
 
@@ -259,14 +297,15 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         ref_run, ref_model, ref_losses, _ = train(os.path.join(tmp, "ref"), epochs, n, "exact")
         ref_loss, ref_acc = evaluate(ref_model, n)
-        ref = {"losses": ref_losses, "loss": ref_loss, "acc": ref_acc,
-               "steps": ref_run.state.step}
-        print(f"uninterrupted: {ref['steps']} steps, final loss {ref_loss:.4f}, "
-              f"accuracy {ref_acc:.1f}%")
+        ref = {"losses": ref_losses, "loss": ref_loss, "acc": ref_acc, "steps": ref_run.state.step}
+        print(
+            f"uninterrupted: {ref['steps']} steps, final loss {ref_loss:.4f}, "
+            f"accuracy {ref_acc:.1f}%"
+        )
         for variant in VARIANTS:
             checks, gaps[variant] = run_variant(variant, tmp, epochs, n, stop_at, ref)
             if variant == "noise":
-                ref["noise_gap"] = gaps["noise"]   # judged against by light and smallest
+                ref["noise_gap"] = gaps["noise"]  # judged against by light and smallest
             for name, ok in checks.items():
                 print(f"{'PASS' if ok else 'FAIL'}  [{variant}] {name}")
                 results.append(ok)
@@ -279,5 +318,5 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
-    if "ipykernel" not in sys.modules:             # pasted into a notebook cell: no exit
+    if "ipykernel" not in sys.modules:  # pasted into a notebook cell: no exit
         sys.exit(exit_code)

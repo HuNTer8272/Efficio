@@ -53,7 +53,7 @@ def _micro_batch(level):
     known total norm of about 256 * level, while the gradients scaled by 65536 still fit
     in fp16 during the backward pass."""
     x = torch.full((BATCH, D_IN), float(level), device="cuda")
-    return x, 1.0 / (2 * BATCH)                    # weight grad = c * BATCH * level
+    return x, 1.0 / (2 * BATCH)  # weight grad = c * BATCH * level
 
 
 def _grads(model):
@@ -68,8 +68,9 @@ def check_clip(accum):
     model = nn.Linear(D_IN, D_OUT)
     reference = copy.deepcopy(model).cuda()
     with tempfile.TemporaryDirectory() as tmp:
-        run = new_run(tmp, resume=False, grad_accum_steps=accum, optimize_data=False,
-                      channels_last=False)
+        run = new_run(
+            tmp, resume=False, grad_accum_steps=accum, optimize_data=False, channels_last=False
+        )
         if run.hw.precision != "fp16":
             return record("SKIP", name, f"this GPU uses {run.hw.precision}, not fp16")
         model, optimizer = run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.0))
@@ -88,21 +89,26 @@ def check_clip(accum):
             run.step()
         scale = run.scaler.get_scale()
 
-    for level in levels:                           # fp32 reference, no scaler
+    for level in levels:  # fp32 reference, no scaler
         x, c = _micro_batch(level)
         (c * reference(x).sum() / accum).backward()
     ref_total = torch.nn.utils.clip_grad_norm_(reference.parameters(), 1.0)
     ref = _grads(reference)
 
     norm_after = clipped.norm().item()
-    ok = (total is not None and torch.isfinite(total)
-          and abs(total.item() - ref_total.item()) <= 1e-3 * ref_total.item()
-          and norm_after <= 1.0 + 1e-3
-          and torch.allclose(clipped, ref, rtol=1e-3, atol=1e-7))
+    ok = (
+        total is not None
+        and torch.isfinite(total)
+        and abs(total.item() - ref_total.item()) <= 1e-3 * ref_total.item()
+        and norm_after <= 1.0 + 1e-3
+        and torch.allclose(clipped, ref, rtol=1e-3, atol=1e-7)
+    )
     before = f"{total.item():.2f}" if total is not None else "none"
-    detail = (f"norm before {before} (fp32: {ref_total.item():.2f}), after {norm_after:.4f}, "
-              f"max diff vs fp32 {(clipped - ref).abs().max().item():.2e}, "
-              f"scaler scale {scale:.0f}")
+    detail = (
+        f"norm before {before} (fp32: {ref_total.item():.2f}), after {norm_after:.4f}, "
+        f"max diff vs fp32 {(clipped - ref).abs().max().item():.2e}, "
+        f"scaler scale {scale:.0f}"
+    )
     record("PASS" if ok else "FAIL", name, detail)
 
 
@@ -118,6 +124,7 @@ class ImageFiles(Dataset):
 
     def __getitem__(self, i):
         from PIL import Image
+
         with Image.open(self.paths[i]) as img:
             img = img.convert("L").resize((self.size, self.size), Image.BILINEAR)
             x = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
@@ -130,13 +137,22 @@ def check_image_cache_tip(count=640, epochs=2):
         return record("SKIP", name, "needs CUDA (the data-wait tips are only given on a GPU)")
     # fake PNG data, as in the image benchmark
     import image_common as ic
+
     data_dir = os.path.join(tempfile.gettempdir(), "efficio_verify_images")
-    args = types.SimpleNamespace(fake=True, fake_count=count, fake_size=512, images=None,
-                                 labels=None, data_dir=data_dir, limit=None)
+    args = types.SimpleNamespace(
+        fake=True,
+        fake_count=count,
+        fake_size=512,
+        images=None,
+        labels=None,
+        data_dir=data_dir,
+        limit=None,
+    )
     paths, labels, _, _ = ic.load_dataset(args)
     torch.manual_seed(0)
-    loader = DataLoader(ImageFiles(paths, labels, 224), batch_size=64, shuffle=True,
-                        drop_last=True, num_workers=2)
+    loader = DataLoader(
+        ImageFiles(paths, labels, 224), batch_size=64, shuffle=True, drop_last=True, num_workers=2
+    )
     model = ic.make_model(labels.shape[1], pretrained=False)
     loss_fn = nn.BCEWithLogitsLoss()
     with tempfile.TemporaryDirectory() as tmp:
@@ -157,8 +173,9 @@ def check_image_cache_tip(count=640, epochs=2):
     if "Decode them once into an ImageCache" in report:
         record("PASS", name, f"data-wait {wait:.0f}%, the report suggests ImageCache")
     else:
-        record("FAIL", name, f"data-wait {wait:.0f}%, no ImageCache data-wait tip. "
-                             f"Report:\n{report}")
+        record(
+            "FAIL", name, f"data-wait {wait:.0f}%, no ImageCache data-wait tip. Report:\n{report}"
+        )
 
 
 # ---------------------------------------------------------------- 3. budget stop + resume
@@ -190,32 +207,44 @@ def check_budget_resume(epochs=3, stop_after_step=40):
         stopped, _ = _train(os.path.join(tmp, "split"), epochs, stop_after_step)
         resumed, model = _train(os.path.join(tmp, "split"), epochs)
     expected = full_run.state.step
-    diff = max((a - b).abs().max().item()
-               for a, b in zip(model.parameters(), full_model.parameters()))
-    ok = (stopped.should_stop and stopped.state.step == stop_after_step + 1
-          and resumed._resumed_from is not None and resumed.state.step == expected
-          and diff <= 1e-4)
-    record("PASS" if ok else "FAIL", name,
-           f"stopped at step {stopped.state.step} ({stopped._stop_reason}), resumed from "
-           f"epoch/batch {resumed._resumed_from}, ended at step {resumed.state.step} of "
-           f"{expected}, max weight diff vs uninterrupted run {diff:.1e}")
+    diff = max(
+        (a - b).abs().max().item() for a, b in zip(model.parameters(), full_model.parameters())
+    )
+    ok = (
+        stopped.should_stop
+        and stopped.state.step == stop_after_step + 1
+        and resumed._resumed_from is not None
+        and resumed.state.step == expected
+        and diff <= 1e-4
+    )
+    record(
+        "PASS" if ok else "FAIL",
+        name,
+        f"stopped at step {stopped.state.step} ({stopped._stop_reason}), resumed from "
+        f"epoch/batch {resumed._resumed_from}, ended at step {resumed.state.step} of "
+        f"{expected}, max weight diff vs uninterrupted run {diff:.1e}",
+    )
 
 
 def main():
     print(f"efficio {efficio.__version__} from {os.path.dirname(efficio.__file__)}")
     gpu = torch.cuda.get_device_name(0) if CUDA else "none"
     print(f"torch {torch.__version__}, CUDA {'yes' if CUDA else 'no'}, GPU: {gpu}\n")
-    checks = [("clip_grad_norm (accumulation 1)", lambda: check_clip(1)),
-              ("clip_grad_norm (accumulation 2)", lambda: check_clip(2)),
-              ("ImageCache report tip", check_image_cache_tip),
-              ("budget stop and resume", check_budget_resume)]
+    checks = [
+        ("clip_grad_norm (accumulation 1)", lambda: check_clip(1)),
+        ("clip_grad_norm (accumulation 2)", lambda: check_clip(2)),
+        ("ImageCache report tip", check_image_cache_tip),
+        ("budget stop and resume", check_budget_resume),
+    ]
     for name, check in checks:
         try:
             check()
-        except Exception as e:                    # a crash is a failure, keep checking
+        except Exception as e:  # a crash is a failure, keep checking
             record("FAIL", name, f"{type(e).__name__}: {e}")
-    print(f"\n{results.count('PASS')} passed, {results.count('FAIL')} failed, "
-          f"{results.count('SKIP')} skipped")
+    print(
+        f"\n{results.count('PASS')} passed, {results.count('FAIL')} failed, "
+        f"{results.count('SKIP')} skipped"
+    )
     sys.exit(1 if "FAIL" in results else 0)
 
 

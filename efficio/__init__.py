@@ -1,14 +1,14 @@
 """Efficio: get more training out of every GPU hour on Colab, Kaggle and local GPUs.
 
-    import efficio
-    run = efficio.Run(budget="2h")
-    model, optimizer = run.prepare(model, optimizer)
-    for x, y in run.loop(loader, epochs=20):
-        with run.autocast():
-            loss = loss_fn(model(x), y)
-        run.backward(loss)
-        run.step()
-    run.report()
+import efficio
+run = efficio.Run(budget="2h")
+model, optimizer = run.prepare(model, optimizer)
+for x, y in run.loop(loader, epochs=20):
+    with run.autocast():
+        loss = loss_fn(model(x), y)
+    run.backward(loss)
+    run.step()
+run.report()
 """
 
 from importlib.metadata import PackageNotFoundError
@@ -23,8 +23,8 @@ from .speed.gpu_augment import on_inputs
 from .speed.gpu_data import GPULoader
 
 try:
-    __version__ = _version("efficio")       # the version in pyproject.toml, once installed
-except PackageNotFoundError:                 # running from a source tree that isn't installed
+    __version__ = _version("efficio")  # the version in pyproject.toml, once installed
+except PackageNotFoundError:  # running from a source tree that isn't installed
     __version__ = "0+unknown"
 
 __all__ = [

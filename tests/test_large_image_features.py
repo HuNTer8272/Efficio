@@ -16,6 +16,7 @@ CPU = HardwareInfo("local", "cpu")
 @pytest.fixture
 def cpu_only(monkeypatch):
     import efficio.run
+
     monkeypatch.setattr(efficio.run, "detect_hardware", lambda: CPU)
 
 
@@ -40,17 +41,17 @@ def test_random_ops_shape_dtype_and_seed(name):
     b = op(x)
     size = 12 if name == "random_resized_crop" else 16
     assert a.shape == (6, 3, size, size) and a.dtype == x.dtype
-    assert torch.equal(a, b)                                     # same seed, same result
+    assert torch.equal(a, b)  # same seed, same result
     torch.manual_seed(1)
-    assert not torch.equal(op(x), a)                             # other seed, other result
+    assert not torch.equal(op(x), a)  # other seed, other result
     same = x[:1].expand(6, -1, -1, -1)
     torch.manual_seed(0)
     out = op(same)
-    assert len({tuple(o.flatten().tolist()) for o in out}) > 1   # randomness per sample
+    assert len({tuple(o.flatten().tolist()) for o in out}) > 1  # randomness per sample
 
 
 def test_ops_keep_float_dtype():
-    x = torch.rand(2, 3, 16, 16, dtype=torch.float64)            # not float32: dtype is kept
+    x = torch.rand(2, 3, 16, 16, dtype=torch.float64)  # not float32: dtype is kept
     for op in RANDOM_OPS.values():
         assert op(x).dtype == torch.float64
     assert A.Resize(4)(x).dtype == torch.float64
@@ -67,11 +68,11 @@ def test_affine_geometry(monkeypatch):
     """With the random draws fixed at their upper bound, check exact pixel positions."""
     monkeypatch.setattr(A, "_uniform", lambda n, low, high, x: torch.full((n,), float(high)))
     dot = torch.zeros(1, 1, 5, 5)
-    dot[0, 0, 0, 2] = 1.0                                        # top middle
+    dot[0, 0, 0, 2] = 1.0  # top middle
     turned = A.random_affine(dot, degrees=90)
-    assert torch.allclose(turned[0, 0, 2, 4], torch.tensor(1.0), atol=1e-5)   # now right middle
+    assert torch.allclose(turned[0, 0, 2, 4], torch.tensor(1.0), atol=1e-5)  # now right middle
     assert torch.allclose(turned.sum(), torch.tensor(1.0), atol=1e-5)
-    x = torch.rand(2, 3, 4, 8)                                   # not square
+    x = torch.rand(2, 3, 4, 8)  # not square
     assert torch.allclose(A.random_affine(x, degrees=180), x.flip(2, 3), atol=1e-5)
     shifted = A.random_affine(x[:, :, :, :5], degrees=0, translate=(0.2, 0.0))  # 1 pixel
     assert torch.allclose(shifted[..., 1:], x[..., :4], atol=1e-5)
@@ -107,16 +108,26 @@ def test_on_inputs():
 
 # ---------- gpu_transform in Run.loop ----------
 
+
 def _images(n=48):
     g = torch.Generator().manual_seed(3)
     x = torch.randint(0, 256, (n, 1, 8, 8), dtype=torch.uint8, generator=g)
     return TensorDataset(x, torch.randint(0, 3, (n,), generator=g))
 
 
-AUGMENT = efficio.on_inputs(A.Compose([
-    A.ToFloat(), A.RepeatChannels(3), A.RandomResizedCrop(8, scale=(0.5, 1.0)),
-    A.RandomAffine(degrees=10, translate=(0.1, 0.1)), A.RandomHorizontalFlip(),
-    A.RandomBrightnessContrast(0.2, 0.2), A.Normalize((0.5,) * 3, (0.25,) * 3)]))
+AUGMENT = efficio.on_inputs(
+    A.Compose(
+        [
+            A.ToFloat(),
+            A.RepeatChannels(3),
+            A.RandomResizedCrop(8, scale=(0.5, 1.0)),
+            A.RandomAffine(degrees=10, translate=(0.1, 0.1)),
+            A.RandomHorizontalFlip(),
+            A.RandomBrightnessContrast(0.2, 0.2),
+            A.Normalize((0.5,) * 3, (0.25,) * 3),
+        ]
+    )
+)
 
 
 def _train(ckpt_dir, epochs, stop_after=None):
@@ -139,7 +150,7 @@ def _train(ckpt_dir, epochs, stop_after=None):
 
 def test_gpu_transform_resume_is_exact(tmp_path, cpu_only):
     full_run, full_model = _train(tmp_path / "full", 3)
-    _train(tmp_path / "split", 3, stop_after=9)                 # stops in epoch 2 (6 batches)
+    _train(tmp_path / "split", 3, stop_after=9)  # stops in epoch 2 (6 batches)
     resumed, model = _train(tmp_path / "split", 3)
     assert resumed._resumed_from == (1, 3)
     assert resumed.state.step == full_run.state.step == 18
@@ -149,12 +160,14 @@ def test_gpu_transform_resume_is_exact(tmp_path, cpu_only):
 
 # ---------- clip_grad_norm ----------
 
+
 def _run_with_model(tmp_path, grad_accum_steps=1):
     torch.manual_seed(0)
     model = nn.Linear(4, 2)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
-    run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False,
-                      grad_accum_steps=grad_accum_steps)
+    run = efficio.Run(
+        checkpoint_dir=str(tmp_path), resume=False, verbose=False, grad_accum_steps=grad_accum_steps
+    )
     run.prepare(model, opt)
     return run, model, opt
 
@@ -177,11 +190,11 @@ def test_clip_grad_norm_with_accumulation(tmp_path, cpu_only):
     x = torch.full((3, 4), 10.0)
     run.backward((model(x) ** 2).sum())
     first = _grad_norm(model).clone()
-    assert run.clip_grad_norm(0.5) is None                       # still accumulating
+    assert run.clip_grad_norm(0.5) is None  # still accumulating
     assert torch.equal(_grad_norm(model), first)
-    run.step()                                                   # micro-batch 1 of 2
+    run.step()  # micro-batch 1 of 2
     run.backward((model(x) ** 2).sum())
-    assert run.clip_grad_norm(0.5) is not None                   # the optimizer steps next
+    assert run.clip_grad_norm(0.5) is not None  # the optimizer steps next
     assert _grad_norm(model) <= 0.5 + 1e-5
     run.step()
     assert run.state.step == 1
@@ -197,7 +210,7 @@ def test_clip_grad_norm_unscales_fp16_style_gradients(tmp_path, cpu_only):
 
     run, model, _ = _run_with_model(tmp_path / "scaled")
     run.scaler = torch.amp.GradScaler("cpu", init_scale=1024.0)
-    run.backward((model(x) ** 2).sum())                          # gradients x1024
+    run.backward((model(x) ** 2).sum())  # gradients x1024
     total = run.clip_grad_norm(0.5)
     assert torch.allclose(total, ref_total)
     run.step()
@@ -206,6 +219,7 @@ def test_clip_grad_norm_unscales_fp16_style_gradients(tmp_path, cpu_only):
 
 
 # ---------- evaluate_mode ----------
+
 
 def test_evaluate_mode_restores_mode(tmp_path, cpu_only):
     run, model, _ = _run_with_model(tmp_path)
@@ -218,15 +232,16 @@ def test_evaluate_mode_restores_mode(tmp_path, cpu_only):
     model.eval()
     with run.evaluate_mode():
         pass
-    assert not model.training                                    # stays as it was
+    assert not model.training  # stays as it was
 
 
 # ---------- ImageCache tip detection ----------
 
+
 def test_detects_datasets_that_decode_image_files(tmp_path):
     from efficio.run import _decodes_image_files
 
-    class FolderLike(torch.utils.data.Dataset):          # like torchvision ImageFolder
+    class FolderLike(torch.utils.data.Dataset):  # like torchvision ImageFolder
         samples = [("a.png", 0)]
 
         def __len__(self):
@@ -241,13 +256,14 @@ def test_detects_datasets_that_decode_image_files(tmp_path):
     del ChestXrayImages.samples
     assert _decodes_image_files(FolderLike())
     assert _decodes_image_files(torch.utils.data.Subset(FolderLike(), [0]))
-    assert _decodes_image_files(ChestXrayImages())          # "image" in the class name
+    assert _decodes_image_files(ChestXrayImages())  # "image" in the class name
     assert not _decodes_image_files(TensorDataset(torch.zeros(2)))
     assert not _decodes_image_files(None)
     PIL = pytest.importorskip("PIL.Image")
     import numpy as np
 
     from efficio.data import CachedImageDataset, ImageCache
+
     PIL.fromarray(np.zeros((4, 4, 3), np.uint8)).save(tmp_path / "a.png")
     ImageCache.build([tmp_path / "a.png"], [0], tmp_path / "c", size=4, workers=0, verbose=False)
     assert not _decodes_image_files(CachedImageDataset(tmp_path / "c"))

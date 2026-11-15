@@ -28,6 +28,7 @@ def cpu_only(monkeypatch):
     """Run on CPU even on a GPU machine (Colab/Kaggle), so these tests check the same thing
     everywhere. Without this, Run picks the GPU and turns channels_last on."""
     import efficio.run
+
     monkeypatch.setattr(efficio.run, "detect_hardware", lambda: CPU)
 
 
@@ -43,6 +44,7 @@ def _data(n=100):
 
 # ---------- optimize_loader ----------
 
+
 def test_optimize_loader_preserves_settings(four_cores):
     ds = _data()
     old = DataLoader(ds, batch_size=8, shuffle=True, drop_last=True)
@@ -54,16 +56,16 @@ def test_optimize_loader_preserves_settings(four_cores):
     assert new.batch_size == 8 and new.drop_last is True
     assert new.sampler is old.sampler and isinstance(new.sampler, RandomSampler)
     assert new.num_workers == 4 and new.persistent_workers and new.prefetch_factor == 4
-    assert new.pin_memory is False                      # CPU: nothing to pin for
+    assert new.pin_memory is False  # CPU: nothing to pin for
     assert "num_workers 0 -> 4" in changes
 
 
 def test_optimize_loader_shuffle_behavior(four_cores, monkeypatch):
-    monkeypatch.setattr(dl, "_cpu_count", lambda: 2)   # keep worker start-up short
+    monkeypatch.setattr(dl, "_cpu_count", lambda: 2)  # keep worker start-up short
     shuffled, _ = dl.optimize_loader(DataLoader(_data(40), batch_size=8, shuffle=True), CPU)
     first = torch.cat([y for _, y in shuffled])
     second = torch.cat([y for _, y in shuffled])
-    assert sorted(first.tolist()) == list(range(40))   # every sample exactly once
+    assert sorted(first.tolist()) == list(range(40))  # every sample exactly once
     assert first.tolist() != list(range(40)) or second.tolist() != list(range(40))
 
     ordered, _ = dl.optimize_loader(DataLoader(_data(40), batch_size=8, shuffle=False), CPU)
@@ -104,6 +106,7 @@ def test_optimize_loader_leaves_unsupported_loaders(four_cores):
 
 # ---------- channels_last ----------
 
+
 def test_channels_last_choice():
     conv = nn.Sequential(nn.Conv2d(3, 8, 3), nn.ReLU())
     linear = nn.Linear(4, 2)
@@ -118,6 +121,7 @@ def test_channels_last_choice():
 
 def test_run_skips_channels_last_on_cpu(tmp_path, cpu_only):
     import efficio
+
     run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
     model = nn.Sequential(nn.Conv2d(3, 8, 3), nn.Flatten())
     run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
@@ -127,12 +131,13 @@ def test_run_skips_channels_last_on_cpu(tmp_path, cpu_only):
 
 # ---------- profiler ----------
 
+
 def test_profiler_percentages():
-    p = Profiler(clock=lambda: 0.0)       # created at t=0
-    p.first_batch(now=20.0)               # 20 s setup
+    p = Profiler(clock=lambda: 0.0)  # created at t=0
+    p.first_batch(now=20.0)  # 20 s setup
     for _ in range(10):
         p.add_step(data_wait_s=1.5, step_s=6.0)
-    p.finish(now=100.0)                   # 80 s training
+    p.finish(now=100.0)  # 80 s training
     assert p.setup_s == 20.0 and p.train_s == 80.0 and p.total_s == 100.0
     assert p.data_wait_pct == pytest.approx(15 / 80 * 100)
     assert p.setup_pct == pytest.approx(20.0)
@@ -154,13 +159,15 @@ def test_tips():
     assert not any("GPULoader" in t for t in tips(25.0, 60.0, 1.0))
     assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True))
     assert not any("GPULoader" in t for t in tips(5.0, 60.0, 1.0, gpu_loader_fits=True))
-    assert tips(2.0, None, 1.0) == []     # no GPU numbers: no utilization tip
-    assert tips(25.0, 60.0, 1.0, on_gpu=False) == []   # CPU run: no GPU tips
+    assert tips(2.0, None, 1.0) == []  # no GPU numbers: no utilization tip
+    assert tips(25.0, 60.0, 1.0, on_gpu=False) == []  # CPU run: no GPU tips
     assert any("ImageCache" in t for t in tips(25.0, None, 30.0, on_gpu=False))
     # Image files decoded every epoch: suggest ImageCache, but GPULoader wins when it fits
     assert any("ImageCache.build" in t for t in tips(25.0, 60.0, 1.0, image_files=True))
-    assert not any("ImageCache.build" in t
-                   for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, image_files=True))
+    assert not any(
+        "ImageCache.build" in t
+        for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, image_files=True)
+    )
     assert not any("ImageCache.build" in t for t in tips(5.0, 95.0, 1.0, image_files=True))
 
 
@@ -183,17 +190,19 @@ def test_short_run_hides_general_data_wait_tip():
     assert not any("waiting for data" in t for t in tips(17.0, 2.0, 37.0, train_s=1.0))
     assert tips(25.0, 60.0, 1.0, train_s=30.0) == []
     # The dataset-specific GPULoader and ImageCache tips still appear in short runs
-    assert any("ImageCache.build" in t for t in tips(25.0, 60.0, 1.0, image_files=True,
-                                                     train_s=30.0))
-    assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True,
-                                              train_s=30.0))
+    assert any(
+        "ImageCache.build" in t for t in tips(25.0, 60.0, 1.0, image_files=True, train_s=30.0)
+    )
+    assert any("GPULoader" in t for t in tips(25.0, 60.0, 1.0, gpu_loader_fits=True, train_s=30.0))
 
 
 # ---------- resume (quickstart-style) ----------
 
+
 def _train(ckpt_dir, epochs, stop_after=None):
     """Train a tiny model through Run. With stop_after, save and quit early like a dying session."""
     import efficio
+
     torch.manual_seed(0)
     loader = DataLoader(_data(64), batch_size=8, shuffle=False)
     model = nn.Linear(1, 64)
@@ -211,7 +220,7 @@ def _train(ckpt_dir, epochs, stop_after=None):
 
 
 def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, cpu_only, monkeypatch):
-    monkeypatch.setattr(dl, "_cpu_count", lambda: 2)    # also exercise the worker loader
+    monkeypatch.setattr(dl, "_cpu_count", lambda: 2)  # also exercise the worker loader
     full_run, full_model = _train(tmp_path / "full", epochs=3)
 
     _train(tmp_path / "split", epochs=3, stop_after=13)  # stops in the middle of epoch 2
@@ -225,17 +234,19 @@ def test_resume_mid_epoch_matches_uninterrupted(tmp_path, four_cores, cpu_only, 
 
 # ---------- Colab/Kaggle robustness ----------
 
+
 def test_sigterm_handler_restored_after_loop(tmp_path, cpu_only):
     """After training, SIGTERM must stop the process (or kernel) again as before."""
     import signal
 
     import efficio
+
     before = signal.getsignal(signal.SIGTERM)
     run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
     model = nn.Linear(1, 4)
     run.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
     for x, y in run.loop(DataLoader(_data(16), batch_size=8), epochs=1):
-        assert signal.getsignal(signal.SIGTERM) is not before     # ours while training
+        assert signal.getsignal(signal.SIGTERM) is not before  # ours while training
         run.backward(nn.functional.cross_entropy(model(x), y % 4))
         run.step()
     assert signal.getsignal(signal.SIGTERM) == before
@@ -244,6 +255,7 @@ def test_sigterm_handler_restored_after_loop(tmp_path, cpu_only):
 def test_report_after_resuming_a_finished_run(tmp_path, cpu_only, capsys):
     """Resumed at the very end: no batches, no steps, and the report must not divide by zero."""
     import efficio
+
     for _ in range(2):
         run = efficio.Run(checkpoint_dir=str(tmp_path), verbose=False)
         model = nn.Linear(1, 4)
@@ -258,6 +270,7 @@ def test_report_after_resuming_a_finished_run(tmp_path, cpu_only, capsys):
 
 def test_loop_twice_does_not_repeat_optimizations(tmp_path, cpu_only, four_cores, monkeypatch):
     import efficio
+
     monkeypatch.setattr(dl, "_cpu_count", lambda: 1)
     run = efficio.Run(checkpoint_dir=str(tmp_path), resume=False, verbose=False)
     model = nn.Linear(1, 4)
@@ -273,17 +286,19 @@ def test_loop_twice_does_not_repeat_optimizations(tmp_path, cpu_only, four_cores
 
 def test_gpu_sampler_gives_up_without_nvidia_smi():
     from efficio.report.profiler import GpuUtilSampler
+
     s = GpuUtilSampler(interval=0.01)
     s.CMD = ["efficio-no-such-nvidia-smi"]
     s.start()
     s._thread.join(timeout=5)
     assert not s._thread.is_alive() and s.available is False and s.average is None
-    s.start()                       # no new thread once we know it is missing
+    s.start()  # no new thread once we know it is missing
     assert not s._thread.is_alive()
     s.stop()
 
 
 # ---------- data-exact resume with a shuffled DataLoader ----------
+
 
 class _NoisyData(torch.utils.data.Dataset):
     """Adds random noise in __getitem__, like a CPU augmentation, using the global torch RNG."""
@@ -301,6 +316,7 @@ class _NoisyData(torch.utils.data.Dataset):
 
 def _train_shuffled(ckpt_dir, epochs, dataset, optimize, stop_after=None):
     import efficio
+
     torch.manual_seed(0)
     loader = DataLoader(dataset, batch_size=8, shuffle=True)
     model = nn.Linear(1, 64)
@@ -318,10 +334,14 @@ def _train_shuffled(ckpt_dir, epochs, dataset, optimize, stop_after=None):
     return run, model, seen
 
 
-@pytest.mark.parametrize("optimize,noisy", [(False, True), (True, False)],
-                         ids=["no-workers+cpu-augment", "optimized-2-workers"])
-def test_resume_shuffled_loader_is_data_exact(tmp_path, cpu_only, four_cores, monkeypatch,
-                                               optimize, noisy):
+@pytest.mark.parametrize(
+    "optimize,noisy",
+    [(False, True), (True, False)],
+    ids=["no-workers+cpu-augment", "optimized-2-workers"],
+)
+def test_resume_shuffled_loader_is_data_exact(
+    tmp_path, cpu_only, four_cores, monkeypatch, optimize, noisy
+):
     monkeypatch.setattr(dl, "_cpu_count", lambda: 2)
     make = (lambda: _NoisyData(64)) if noisy else (lambda: _data(64))
     full_run, full_model, full_seen = _train_shuffled(tmp_path / "full", 3, make(), optimize)
@@ -330,7 +350,7 @@ def test_resume_shuffled_loader_is_data_exact(tmp_path, cpu_only, four_cores, mo
     resumed, model, rest = _train_shuffled(tmp_path / "split", 3, make(), optimize)
 
     assert resumed._resumed_from == (1, 5)
-    assert first + rest == full_seen                     # same batches in the same order
+    assert first + rest == full_seen  # same batches in the same order
     assert resumed.state.step == full_run.state.step == 24
     for a, b in zip(model.parameters(), full_model.parameters()):
         assert torch.equal(a, b)
@@ -357,11 +377,12 @@ def test_seeded_shuffle_order(four_cores):
 def test_old_checkpoint_without_extra_still_loads(tmp_path):
     from efficio.checkpoint import CheckpointManager
     from efficio.interfaces import TrainState
+
     model = nn.Linear(2, 2)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
     mgr = CheckpointManager(str(tmp_path))
     path = mgr.save(TrainState(step=1), model, opt)
     payload = torch.load(path, weights_only=False)
-    del payload["extra"]                                  # what older checkpoints look like
+    del payload["extra"]  # what older checkpoints look like
     torch.save(payload, path)
     assert mgr.load(model, opt)["step"] == 1 and mgr.extra == {}

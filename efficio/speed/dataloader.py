@@ -31,7 +31,7 @@ def _rebuild(loader, **changes):
     """A new DataLoader with the same settings as `loader`, except `changes`."""
     kwargs = dict(
         batch_size=loader.batch_size,
-        sampler=loader.sampler,                     # same sampler -> same shuffle behavior
+        sampler=loader.sampler,  # same sampler -> same shuffle behavior
         num_workers=loader.num_workers,
         collate_fn=loader.collate_fn,
         pin_memory=loader.pin_memory,
@@ -41,9 +41,11 @@ def _rebuild(loader, **changes):
         generator=loader.generator,
     )
     if loader.num_workers > 0:
-        kwargs.update(persistent_workers=loader.persistent_workers,
-                      prefetch_factor=loader.prefetch_factor,
-                      multiprocessing_context=loader.multiprocessing_context)
+        kwargs.update(
+            persistent_workers=loader.persistent_workers,
+            prefetch_factor=loader.prefetch_factor,
+            multiprocessing_context=loader.multiprocessing_context,
+        )
     kwargs.update(changes)
     if kwargs["num_workers"] == 0:
         for key in ("persistent_workers", "prefetch_factor", "multiprocessing_context"):
@@ -76,8 +78,12 @@ def seeded_shuffle(loader, base_seed=None):
         base_seed = default_shuffle_seed(loader)
     old = loader.sampler
     order_gen, worker_gen = torch.Generator(), torch.Generator()
-    sampler = RandomSampler(old.data_source, replacement=old.replacement,
-                            num_samples=getattr(old, "_num_samples", None), generator=order_gen)
+    sampler = RandomSampler(
+        old.data_source,
+        replacement=old.replacement,
+        num_samples=getattr(old, "_num_samples", None),
+        generator=order_gen,
+    )
     new = _rebuild(loader, sampler=sampler, generator=worker_gen)
 
     def set_epoch(epoch):
@@ -100,7 +106,7 @@ def optimize_loader(loader, hw):
 
     old_workers = loader.num_workers
     if old_workers > 0:
-        workers = old_workers                       # the user chose this, keep it
+        workers = old_workers  # the user chose this, keep it
     elif _can_add_workers():
         workers = min(_cpu_count(), MAX_WORKERS)
     else:
@@ -109,8 +115,11 @@ def optimize_loader(loader, hw):
 
     settings = dict(num_workers=workers, pin_memory=pin)
     if workers > 0:
-        settings.update(persistent_workers=True, prefetch_factor=PREFETCH_FACTOR,
-                        multiprocessing_context=loader.multiprocessing_context)
+        settings.update(
+            persistent_workers=True,
+            prefetch_factor=PREFETCH_FACTOR,
+            multiprocessing_context=loader.multiprocessing_context,
+        )
     new = _rebuild(loader, **settings)
 
     changes = []

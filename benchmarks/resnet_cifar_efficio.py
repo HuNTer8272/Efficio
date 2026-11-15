@@ -30,10 +30,16 @@ from common import (
 parser = argparse.ArgumentParser()
 parser.add_argument("--epochs", type=int, default=5)
 parser.add_argument("--batch-size", type=int, default=128)
-parser.add_argument("--no-optimize-data", action="store_true",
-                    help="turn off DataLoader tuning and channels_last to measure them separately")
-parser.add_argument("--gpu-data", action="store_true",
-                    help="keep the training set on the GPU and augment there (GPULoader)")
+parser.add_argument(
+    "--no-optimize-data",
+    action="store_true",
+    help="turn off DataLoader tuning and channels_last to measure them separately",
+)
+parser.add_argument(
+    "--gpu-data",
+    action="store_true",
+    help="keep the training set on the GPU and augment there (GPULoader)",
+)
 parser.add_argument("--data-dir", default="./data", help="where CIFAR-10 is stored")
 args = parser.parse_args()
 optimize = not args.no_optimize_data
@@ -50,18 +56,28 @@ if args.gpu_data:
     # Same images and augmentation as the baseline's CPU pipeline (RandomCrop(32, padding=4),
     # RandomHorizontalFlip, Normalize), same batch size, drop_last=True. Building it draws
     # nothing from the global RNG, so the model below is initialized identically.
-    augment = A.Compose([A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(),
-                         A.Normalize(CIFAR_MEAN, CIFAR_STD)])
+    augment = A.Compose(
+        [A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(CIFAR_MEAN, CIFAR_STD)]
+    )
     train_loader = efficio.GPULoader.from_torchvision(
-        train_loader.dataset, batch_size=args.batch_size, shuffle=True, drop_last=True,
-        transform=augment, seed=0)
+        train_loader.dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        transform=augment,
+        seed=0,
+    )
 model = make_model()
 optimizer, scheduler = make_optimizer(model, args.epochs, len(train_loader))
 loss_fn = nn.CrossEntropyLoss()
 
 # Fresh temporary checkpoint dir and resume=False, so every benchmark run starts from scratch
-run = efficio.Run(checkpoint_dir=tempfile.mkdtemp(prefix="efficio_bench_"), resume=False,
-                  optimize_data=optimize, channels_last="auto" if optimize else False)
+run = efficio.Run(
+    checkpoint_dir=tempfile.mkdtemp(prefix="efficio_bench_"),
+    resume=False,
+    optimize_data=optimize,
+    channels_last="auto" if optimize else False,
+)
 model, optimizer = run.prepare(model, optimizer, scheduler)
 
 epoch_times = []
@@ -80,7 +96,7 @@ with GpuUtilSampler() as sampler:
         with run.autocast():
             loss = loss_fn(model(x), y)
         run.backward(loss)
-        run.step()          # also steps the scheduler; do not call scheduler.step() here
+        run.step()  # also steps the scheduler; do not call scheduler.step() here
     # The last epoch's time also includes Efficio's final checkpoint save at the end of run.loop
     sync()
     epoch_times.append(time.perf_counter() - start)
@@ -88,7 +104,16 @@ with GpuUtilSampler() as sampler:
 
 test_acc = evaluate(model, test_loader, run.device, autocast=run.autocast)
 run.report()
-save_results(run_name, epoch_times,
-             len(train_loader) * args.batch_size, sampler.average, test_acc,
-             extra={"precision": run.hw.precision, "batch_size": args.batch_size,
-                    "gpu_data": args.gpu_data, "optimizations": run.optimizations})
+save_results(
+    run_name,
+    epoch_times,
+    len(train_loader) * args.batch_size,
+    sampler.average,
+    test_acc,
+    extra={
+        "precision": run.hw.precision,
+        "batch_size": args.batch_size,
+        "gpu_data": args.gpu_data,
+        "optimizations": run.optimizations,
+    },
+)

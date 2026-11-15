@@ -28,7 +28,7 @@ def default_checkpoint_dir(platform: str, session_disk: bool = False) -> str:
     """A sensible place to save checkpoints on each platform. session_disk: use the fast
     local disk even on Colab with Drive mounted (when the checkpoints are copied to storage)."""
     if platform == "kaggle":
-        return "/kaggle/working/efficio_checkpoints"   # kept in the notebook's output
+        return "/kaggle/working/efficio_checkpoints"  # kept in the notebook's output
     if platform == "colab":
         if not session_disk and os.path.isdir("/content/drive/MyDrive"):  # survives the session
             return "/content/drive/MyDrive/efficio_checkpoints"
