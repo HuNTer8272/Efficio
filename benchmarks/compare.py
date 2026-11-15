@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
-DEFAULT_BENCHMARK = "resnet18-cifar10"      # results saved before the "benchmark" field
+DEFAULT_BENCHMARK = "resnet18-cifar10"  # results saved before the "benchmark" field
 
 COLUMNS = [
     ("benchmark", "benchmark"),
@@ -72,8 +72,10 @@ def print_speedups(results):
             label = "baseline" if len(bases) == 1 else base_name
             for name in others:
                 eff = latest[name]["epochs_per_hour"]
-                print(f"{bench} / {platform}: {name} {eff} vs {label} {base} epochs/hour "
-                      f"-> {eff / base:.2f}x speedup")
+                print(
+                    f"{bench} / {platform}: {name} {eff} vs {label} {base} epochs/hour "
+                    f"-> {eff / base:.2f}x speedup"
+                )
 
 
 if __name__ == "__main__":

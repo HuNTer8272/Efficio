@@ -36,8 +36,8 @@ def random_crop(x, size, padding=0):
         raise ValueError(f"crop size {(th, tw)} is larger than the padded image {(h, w)}")
     top = torch.randint(0, h - th + 1, (n,), device=x.device)
     left = torch.randint(0, w - tw + 1, (n,), device=x.device)
-    rows = (top[:, None] + torch.arange(th, device=x.device))[:, :, None]     # (N, th, 1)
-    cols = (left[:, None] + torch.arange(tw, device=x.device))[:, None, :]    # (N, 1, tw)
+    rows = (top[:, None] + torch.arange(th, device=x.device))[:, :, None]  # (N, th, 1)
+    cols = (left[:, None] + torch.arange(tw, device=x.device))[:, None, :]  # (N, 1, tw)
     idx = torch.arange(n, device=x.device)[:, None, None]
     # Advanced indexing around the channel slice puts channels last: (N, th, tw, C)
     return x[idx, :, rows, cols].permute(0, 3, 1, 2).contiguous()
@@ -78,8 +78,9 @@ def _need_float(x, name):
 def resize(x, size, antialias=True):
     """Resize every image to `size` (bilinear)."""
     _need_float(x, "resize")
-    return F.interpolate(x, size=_pair(size), mode="bilinear", align_corners=False,
-                         antialias=antialias)
+    return F.interpolate(
+        x, size=_pair(size), mode="bilinear", align_corners=False, antialias=antialias
+    )
 
 
 def _uniform(n, low, high, x):
@@ -102,9 +103,9 @@ def random_resized_crop(x, size, scale=(0.08, 1.0), ratio=(3 / 4, 4 / 3)):
     n, _, h, w = x.shape
     area = h * w * _uniform(n, scale[0], scale[1], x)
     r = torch.exp(_uniform(n, math.log(ratio[0]), math.log(ratio[1]), x))
-    cw = torch.sqrt(area * r).clamp(max=w)                       # box size in pixels
+    cw = torch.sqrt(area * r).clamp(max=w)  # box size in pixels
     ch = torch.sqrt(area / r).clamp(max=h)
-    cx = cw / 2 + torch.rand(n, device=x.device) * (w - cw)      # box center in pixels
+    cx = cw / 2 + torch.rand(n, device=x.device) * (w - cw)  # box center in pixels
     cy = ch / 2 + torch.rand(n, device=x.device) * (h - ch)
     theta = torch.zeros(n, 2, 3, device=x.device)
     theta[:, 0, 0], theta[:, 0, 2] = cw / w, 2 * cx / w - 1
@@ -119,13 +120,14 @@ def random_affine(x, degrees=10.0, translate=(0.0, 0.0), scale=(1.0, 1.0)):
     n, _, h, w = x.shape
     angle = torch.deg2rad(_uniform(n, -degrees, degrees, x))
     s = _uniform(n, scale[0], scale[1], x)
-    tx = _uniform(n, -translate[0], translate[0], x) * 2         # in normalized units
+    tx = _uniform(n, -translate[0], translate[0], x) * 2  # in normalized units
     ty = _uniform(n, -translate[1], translate[1], x) * 2
     cos, sin = torch.cos(angle) / s, torch.sin(angle) / s
     # Inverse rotation/scale in pixel space, expressed in normalized coordinates
-    a = torch.stack([torch.stack([cos, sin * h / w], 1),
-                     torch.stack([-sin * w / h, cos], 1)], 1)    # (N, 2, 2)
-    shift = torch.stack([tx, ty], 1).unsqueeze(2)                # (N, 2, 1)
+    a = torch.stack(
+        [torch.stack([cos, sin * h / w], 1), torch.stack([-sin * w / h, cos], 1)], 1
+    )  # (N, 2, 2)
+    shift = torch.stack([tx, ty], 1).unsqueeze(2)  # (N, 2, 1)
     theta = torch.cat([a, -a @ shift], 2)
     return _warp(x, theta, (h, w))
 
@@ -146,6 +148,7 @@ def on_inputs(transform):
     """Wrap a transform so it only touches the inputs of a batch: the first element of an
     (inputs, labels, ...) tuple/list, or batch["pixel_values"] / batch["image"] of a dict
     batch. A plain tensor batch is transformed as a whole. For run.loop(gpu_transform=...)."""
+
     def apply(batch):
         if torch.is_tensor(batch):
             return transform(batch)
@@ -157,6 +160,7 @@ def on_inputs(transform):
         if isinstance(batch, (list, tuple)):
             return type(batch)([transform(batch[0]), *batch[1:]])
         raise TypeError(f"on_inputs: unsupported batch type {type(batch).__name__}")
+
     return apply
 
 

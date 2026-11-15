@@ -55,5 +55,11 @@ with GpuUtilSampler() as sampler:
         print(f"epoch {epoch + 1}/{args.epochs}: {epoch_times[-1]:.1f} s, loss {loss.item():.3f}")
 
 test_acc = evaluate(model, test_loader, device)
-save_results("baseline", epoch_times, len(train_loader) * args.batch_size, sampler.average,
-             test_acc, extra={"precision": "fp32", "batch_size": args.batch_size})
+save_results(
+    "baseline",
+    epoch_times,
+    len(train_loader) * args.batch_size,
+    sampler.average,
+    test_acc,
+    extra={"precision": "fp32", "batch_size": args.batch_size},
+)

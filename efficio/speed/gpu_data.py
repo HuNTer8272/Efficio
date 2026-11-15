@@ -18,7 +18,7 @@ import warnings
 
 import torch
 
-MAX_FREE_FRACTION = 0.3     # refuse datasets that need more than this share of free GPU memory
+MAX_FREE_FRACTION = 0.3  # refuse datasets that need more than this share of free GPU memory
 
 
 def _free_gpu_bytes(device):
@@ -34,7 +34,8 @@ def _check_memory(nbytes, device):
         raise ValueError(
             f"GPULoader: the dataset needs {nbytes / 1024**3:.2f} GB, more than "
             f"{MAX_FREE_FRACTION:.0%} of the {free / 1024**3:.2f} GB free on {device}. "
-            "Use a normal torch DataLoader for this dataset; Efficio will tune it for you.")
+            "Use a normal torch DataLoader for this dataset; Efficio will tune it for you."
+        )
 
 
 def _to_nchw(x):
@@ -73,8 +74,9 @@ class GPULoader:
     """Yields (x, y) batches from tensors kept on one device. Use the from_tensors or
     from_torchvision constructors."""
 
-    def __init__(self, x, y, batch_size, shuffle=True, drop_last=False, transform=None,
-                 seed=0, device=None):
+    def __init__(
+        self, x, y, batch_size, shuffle=True, drop_last=False, transform=None, seed=0, device=None
+    ):
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
         x, y = _tensor(x), _tensor(y)
@@ -96,15 +98,17 @@ class GPULoader:
         self._start_batch = 0
 
     @classmethod
-    def from_tensors(cls, x, y, batch_size, shuffle=True, drop_last=False, transform=None,
-                     seed=0, device=None):
+    def from_tensors(
+        cls, x, y, batch_size, shuffle=True, drop_last=False, transform=None, seed=0, device=None
+    ):
         """x: uint8 images (N,H,W,C), (N,C,H,W) or (N,H,W), or any other tensor/array of
         N samples. y: N labels."""
         return cls(x, y, batch_size, shuffle, drop_last, transform, seed, device)
 
     @classmethod
-    def from_torchvision(cls, dataset, batch_size, shuffle=True, drop_last=False,
-                         transform=None, seed=0, device=None):
+    def from_torchvision(
+        cls, dataset, batch_size, shuffle=True, drop_last=False, transform=None, seed=0, device=None
+    ):
         """Uses dataset.data and dataset.targets (CIFAR10/100, MNIST, FashionMNIST).
         The dataset's own CPU transform is not used; pass the GPU version as `transform`."""
         if not (hasattr(dataset, "data") and hasattr(dataset, "targets")):
@@ -112,12 +116,16 @@ class GPULoader:
                 f"GPULoader.from_torchvision needs a dataset with .data and .targets "
                 f"(CIFAR, MNIST, FashionMNIST); {type(dataset).__name__} has no such "
                 "attributes. Load the images and labels into tensors and use "
-                "GPULoader.from_tensors(x, y, batch_size) instead.")
+                "GPULoader.from_tensors(x, y, batch_size) instead."
+            )
         if transform is None and getattr(dataset, "transform", None) is not None:
-            warnings.warn("GPULoader ignores the dataset's own transform. Pass the GPU "
-                          "equivalent as transform= (see efficio.speed.gpu_augment).")
-        return cls(dataset.data, dataset.targets, batch_size, shuffle, drop_last, transform,
-                   seed, device)
+            warnings.warn(
+                "GPULoader ignores the dataset's own transform. Pass the GPU "
+                "equivalent as transform= (see efficio.speed.gpu_augment)."
+            )
+        return cls(
+            dataset.data, dataset.targets, batch_size, shuffle, drop_last, transform, seed, device
+        )
 
     def __len__(self):
         n = len(self.x)
@@ -145,7 +153,7 @@ class GPULoader:
         start, self._start_batch = self._start_batch, 0
         self.epoch += 1
         for b in range(start, len(self)):
-            idx = order[b * self.batch_size:(b + 1) * self.batch_size]
+            idx = order[b * self.batch_size : (b + 1) * self.batch_size]
             x = self.x[idx]
             if self.is_image:
                 x = x.float().div_(255)

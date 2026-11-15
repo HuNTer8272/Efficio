@@ -51,7 +51,7 @@ def _find_attached_cifar(root, max_depth=4):
         if CIFAR_ARCHIVE in filenames:
             return "archive", here / CIFAR_ARCHIVE
         if len(here.relative_to(root).parts) >= max_depth:
-            dirnames[:] = []        # don't walk deep into large attached datasets
+            dirnames[:] = []  # don't walk deep into large attached datasets
     return None
 
 
@@ -66,8 +66,10 @@ def prepare_cifar10(data_dir, search_root=KAGGLE_INPUT):
         return "existing"
     found = _find_attached_cifar(search_root)
     if found is None:
-        print(f"CIFAR-10 source: no copy in {data_dir} or {search_root}, downloading with "
-              "torchvision (on Kaggle, attach a CIFAR-10 dataset to skip this)")
+        print(
+            f"CIFAR-10 source: no copy in {data_dir} or {search_root}, downloading with "
+            "torchvision (on Kaggle, attach a CIFAR-10 dataset to skip this)"
+        )
         return "download"
     kind, path = found
     start = time.perf_counter()
@@ -79,7 +81,7 @@ def prepare_cifar10(data_dir, search_root=KAGGLE_INPUT):
         with tarfile.open(path) as tar:
             try:
                 tar.extractall(data_dir, filter="data")
-            except TypeError:       # Python without extraction filters
+            except TypeError:  # Python without extraction filters
                 tar.extractall(data_dir)
         print(f"CIFAR-10 source: extracted attached archive {path} to {data_dir}", end="")
     print(f" ({time.perf_counter() - start:.1f} s)")
@@ -87,21 +89,26 @@ def prepare_cifar10(data_dir, search_root=KAGGLE_INPUT):
 
 
 def make_loaders(batch_size=128, num_workers=2, data_dir="./data"):
-    train_tf = T.Compose([
-        T.RandomCrop(32, padding=4),
-        T.RandomHorizontalFlip(),
-        T.ToTensor(),
-        T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD),
-    ])
+    train_tf = T.Compose(
+        [
+            T.RandomCrop(32, padding=4),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD),
+        ]
+    )
     test_tf = T.Compose([T.ToTensor(), T.Normalize(mean=CIFAR_MEAN, std=CIFAR_STD)])
     prepare_cifar10(data_dir)
-    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=True,
-                                             transform=train_tf)
+    train_set = torchvision.datasets.CIFAR10(
+        data_dir, train=True, download=True, transform=train_tf
+    )
     test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=True, transform=test_tf)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True,
-                                               drop_last=True, num_workers=num_workers)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=256, shuffle=False,
-                                              num_workers=num_workers)
+    train_loader = torch.utils.data.DataLoader(
+        train_set, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=num_workers
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set, batch_size=256, shuffle=False, num_workers=num_workers
+    )
     return train_loader, test_loader
 
 
@@ -115,8 +122,9 @@ def make_model():
 
 def make_optimizer(model, epochs, steps_per_epoch):
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.1,
-                                                    total_steps=epochs * steps_per_epoch)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=0.1, total_steps=epochs * steps_per_epoch
+    )
     return optimizer, scheduler
 
 

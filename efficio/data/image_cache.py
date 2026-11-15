@@ -37,12 +37,18 @@ from ..env.detect import detect_platform
 
 FORMAT_VERSION = 1
 IMAGES_FILE, LABELS_FILE, META_FILE, PROGRESS_FILE = (
-    "images.npy", "labels.npy", "meta.json", "progress.json")
-DECODE_GROUP = 16            # images per decode task
-READ_TIP_RATIO = 0.5         # reads below this share of decode capacity: storage is the limit
-GPU_NOTE = ("Building the cache doesn't need a GPU. To save GPU quota, build it once in a "
-            "CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: "
-            "Google Drive), then train in a GPU session.")
+    "images.npy",
+    "labels.npy",
+    "meta.json",
+    "progress.json",
+)
+DECODE_GROUP = 16  # images per decode task
+READ_TIP_RATIO = 0.5  # reads below this share of decode capacity: storage is the limit
+GPU_NOTE = (
+    "Building the cache doesn't need a GPU. To save GPU quota, build it once in a "
+    "CPU-only session, save it (Kaggle: Save Version or a private dataset; Colab: "
+    "Google Drive), then train in a GPU session."
+)
 _gpu_note_shown = False
 
 
@@ -59,6 +65,7 @@ def _decode_group(blobs, names, size, grayscale):
     """Decode and resize images from their file bytes. Runs in a worker process.
     Returns ((n, H, W, C) uint8 array, seconds spent)."""
     from PIL import Image
+
     start = time.perf_counter()
     h, w = size
     out = np.empty((len(blobs), h, w, 1 if grayscale else 3), dtype=np.uint8)
@@ -98,7 +105,7 @@ def _write_json(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
-    os.replace(tmp, path)          # atomic: an interrupted write never leaves a broken file
+    os.replace(tmp, path)  # atomic: an interrupted write never leaves a broken file
 
 
 def _read_json(path):
@@ -118,13 +125,17 @@ def _storage_tip(out_dir):
     if platform == "colab":
         if os.path.abspath(out_dir).startswith("/content/drive"):
             return "It is on Google Drive, so it survives the session."
-        return ("To keep it for later sessions, copy the folder to Google Drive (for example "
-                "!cp -r <cache> /content/drive/MyDrive/). Copying one finished folder is much "
-                "faster than building on Drive directly.")
+        return (
+            "To keep it for later sessions, copy the folder to Google Drive (for example "
+            "!cp -r <cache> /content/drive/MyDrive/). Copying one finished folder is much "
+            "faster than building on Drive directly."
+        )
     if platform == "kaggle":
-        return ("To keep it for later sessions, save it as notebook output (it must be under "
-                "/kaggle/working, then Save Version) or upload it as a private dataset, and "
-                "attach that in later notebooks.")
+        return (
+            "To keep it for later sessions, save it as notebook output (it must be under "
+            "/kaggle/working, then Save Version) or upload it as a private dataset, and "
+            "attach that in later notebooks."
+        )
     return "Keep it on a fast local disk (an SSD) for the best read speed."
 
 
@@ -136,8 +147,9 @@ class ImageCache:
         self.build_stats = None
         self.meta = _read_json(os.path.join(self.out_dir, META_FILE))
         if not self.meta or not self.meta.get("complete"):
-            raise FileNotFoundError(f"No finished image cache in {self.out_dir}. "
-                                    "Run ImageCache.build(...) first.")
+            raise FileNotFoundError(
+                f"No finished image cache in {self.out_dir}. Run ImageCache.build(...) first."
+            )
 
     def __len__(self):
         return self.meta["count"]
@@ -145,12 +157,24 @@ class ImageCache:
     @property
     def size_on_disk(self):
         """Bytes used by the cache files."""
-        return sum(os.path.getsize(os.path.join(self.out_dir, f))
-                   for f in (IMAGES_FILE, LABELS_FILE, META_FILE))
+        return sum(
+            os.path.getsize(os.path.join(self.out_dir, f))
+            for f in (IMAGES_FILE, LABELS_FILE, META_FILE)
+        )
 
     @classmethod
-    def build(cls, paths, labels, out_dir, size=(224, 224), grayscale=False, workers=None,
-              io_threads=32, chunk_size=256, verbose=True):
+    def build(
+        cls,
+        paths,
+        labels,
+        out_dir,
+        size=(224, 224),
+        grayscale=False,
+        workers=None,
+        io_threads=32,
+        chunk_size=256,
+        verbose=True,
+    ):
         """Decode and resize every image in `paths` once into `out_dir`.
 
         labels: N ints (single label) or an (N, K) array of 0/1 floats (multi-label).
@@ -164,8 +188,10 @@ class ImageCache:
         paths = [str(p) for p in paths]
         labels = np.asarray(labels)
         if len(paths) == 0 or len(labels) != len(paths):
-            raise ValueError(f"need the same, non-zero number of paths and labels "
-                             f"(got {len(paths)} and {len(labels)})")
+            raise ValueError(
+                f"need the same, non-zero number of paths and labels "
+                f"(got {len(paths)} and {len(labels)})"
+            )
         if labels.ndim == 1:
             labels = labels.astype(np.int64)
         elif labels.ndim == 2:
@@ -176,10 +202,16 @@ class ImageCache:
         channels = 1 if grayscale else 3
         out_dir = str(out_dir)
         os.makedirs(out_dir, exist_ok=True)
-        meta = {"version": FORMAT_VERSION, "size": [h, w], "channels": channels,
-                "count": len(paths), "label_shape": list(labels.shape[1:]),
-                "label_dtype": str(labels.dtype), "paths_sha1": _paths_hash(paths),
-                "chunk_size": chunk_size}
+        meta = {
+            "version": FORMAT_VERSION,
+            "size": [h, w],
+            "channels": channels,
+            "count": len(paths),
+            "label_shape": list(labels.shape[1:]),
+            "label_dtype": str(labels.dtype),
+            "paths_sha1": _paths_hash(paths),
+            "chunk_size": chunk_size,
+        }
         meta_path = os.path.join(out_dir, META_FILE)
         progress_path = os.path.join(out_dir, PROGRESS_FILE)
         images_path = os.path.join(out_dir, IMAGES_FILE)
@@ -189,8 +221,10 @@ class ImageCache:
         if same and old.get("complete"):
             cache = cls(out_dir)
             if verbose:
-                print(f"[efficio] image cache: using the finished cache in {out_dir} "
-                      f"({len(cache)} images, {_size(cache.size_on_disk)})")
+                print(
+                    f"[efficio] image cache: using the finished cache in {out_dir} "
+                    f"({len(cache)} images, {_size(cache.size_on_disk)})"
+                )
             return cache
 
         n_chunks = (len(paths) + chunk_size - 1) // chunk_size
@@ -201,8 +235,9 @@ class ImageCache:
             if old is not None and verbose:
                 print(f"[efficio] image cache: settings or paths changed, rebuilding {out_dir}")
             done = set()
-            images = np.lib.format.open_memmap(images_path, mode="w+", dtype=np.uint8,
-                                               shape=(len(paths), h, w, channels))
+            images = np.lib.format.open_memmap(
+                images_path, mode="w+", dtype=np.uint8, shape=(len(paths), h, w, channels)
+            )
             np.save(os.path.join(out_dir, LABELS_FILE), labels)
             _write_json(progress_path, {"done": []})
             _write_json(meta_path, {**meta, "complete": False})
@@ -216,11 +251,13 @@ class ImageCache:
             if note:
                 print(f"[efficio] note: {note}")
             resumed = f", resuming ({len(done)}/{n_chunks} chunks already done)" if done else ""
-            print(f"[efficio] image cache: decoding {len(paths)} images to {h}x{w}x{channels} "
-                  f"in {out_dir}{resumed}")
+            print(
+                f"[efficio] image cache: decoding {len(paths)} images to {h}x{w}x{channels} "
+                f"in {out_dir}{resumed}"
+            )
 
         # Work in small groups of images inside each unfinished chunk
-        limit = 4 * io_threads              # files read but not yet written: bounds memory
+        limit = 4 * io_threads  # files read but not yet written: bounds memory
         group = min(DECODE_GROUP, limit)
         groups, left_in_chunk = deque(), {}
         for c in todo:
@@ -229,12 +266,13 @@ class ImageCache:
             groups.extend(list(range(i, min(i + group, end))) for i in range(first, end, group))
 
         def finish_chunk(c):
-            images.flush()                                   # data on disk before it counts
+            images.flush()  # data on disk before it counts
             done.add(c)
             _write_json(progress_path, {"done": sorted(done)})
 
-        progress = _Progress(sum(left_in_chunk.values()), verbose, io_threads,
-                             workers if workers > 1 else 1)
+        progress = _Progress(
+            sum(left_in_chunk.values()), verbose, io_threads, workers if workers > 1 else 1
+        )
         readers = ThreadPoolExecutor(max_workers=io_threads)
         decoders = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
         try:
@@ -242,11 +280,11 @@ class ImageCache:
 
             def write(g, arr, seconds):
                 nonlocal in_flight
-                images[g[0]:g[-1] + 1] = arr          # each group has its own rows: any order
+                images[g[0] : g[-1] + 1] = arr  # each group has its own rows: any order
                 in_flight -= len(g)
                 c = g[0] // chunk_size
                 left_in_chunk[c] -= len(g)
-                if left_in_chunk[c] == 0:            # a chunk counts once all of it is written
+                if left_in_chunk[c] == 0:  # a chunk counts once all of it is written
                     finish_chunk(c)
                 progress.decoded(len(g), seconds)
 
@@ -263,11 +301,11 @@ class ImageCache:
                 for item in [r for r in reading if all(f.done() for f in r[1])]:
                     reading.remove(item)
                     g, futures = item
-                    blobs = [f.result() for f in futures]        # raises read errors
+                    blobs = [f.result() for f in futures]  # raises read errors
                     progress.read(len(g))
                     args = (blobs, [paths[i] for i in g], (h, w), grayscale)
                     if decoders is None:
-                        write(g, *_decode_group(*args))          # nothing waits unsaved
+                        write(g, *_decode_group(*args))  # nothing waits unsaved
                     else:
                         decoding[decoders.submit(_decode_group, *args)] = g
                     moved = True
@@ -284,13 +322,15 @@ class ImageCache:
             if decoders is not None:
                 decoders.shutdown(wait=True, cancel_futures=True)
         progress.close()
-        images = None                       # close the memory-mapped file
+        images = None  # close the memory-mapped file
         _write_json(meta_path, {**meta, "complete": True})
         cache = cls(out_dir)
         cache.build_stats = progress.stats()
         if verbose:
-            print(f"[efficio] image cache: done, {_size(cache.size_on_disk)} on disk in "
-                  f"{out_dir}. {_storage_tip(out_dir)}")
+            print(
+                f"[efficio] image cache: done, {_size(cache.size_on_disk)} on disk in "
+                f"{out_dir}. {_storage_tip(out_dir)}"
+            )
         return cache
 
 
@@ -323,22 +363,38 @@ class _Progress:
         self.last = now
         elapsed, rate, reads, capacity = self._rates()
         left = (self.total - self.done) / rate if rate > 0 else 0
-        print(f"\r[efficio] image cache: {self.done}/{self.total} images, {rate:.0f} img/s "
-              f"(read {reads:.0f} files/s, decode up to {capacity:.0f} img/s), "
-              f"~{left / 60:.1f} min left   ", end="", flush=True)
-        if (not self.tip_shown and elapsed >= 10 and self.done >= 50
-                and reads < READ_TIP_RATIO * capacity):
+        print(
+            f"\r[efficio] image cache: {self.done}/{self.total} images, {rate:.0f} img/s "
+            f"(read {reads:.0f} files/s, decode up to {capacity:.0f} img/s), "
+            f"~{left / 60:.1f} min left   ",
+            end="",
+            flush=True,
+        )
+        if (
+            not self.tip_shown
+            and elapsed >= 10
+            and self.done >= 50
+            and reads < READ_TIP_RATIO * capacity
+        ):
             self.tip_shown = True
-            print(f"\n[efficio] image cache: reading files ({reads:.0f}/s) is much slower than "
-                  f"decoding ({capacity:.0f}/s), so storage is the bottleneck. Try a higher "
-                  f"io_threads, e.g. ImageCache.build(..., io_threads={2 * self.io_threads}).")
+            print(
+                f"\n[efficio] image cache: reading files ({reads:.0f}/s) is much slower than "
+                f"decoding ({capacity:.0f}/s), so storage is the bottleneck. Try a higher "
+                f"io_threads, e.g. ImageCache.build(..., io_threads={2 * self.io_threads})."
+            )
 
     def stats(self):
         elapsed, rate, reads, capacity = self._rates()
-        return {"seconds": round(elapsed, 2), "images": self.done,
-                "images_per_s": round(rate, 1), "read_files_per_s": round(reads, 1),
-                "decode_capacity_per_s": round(capacity, 1), "io_threads": self.io_threads,
-                "decode_workers": self.decode_workers, "max_in_flight": self.max_in_flight}
+        return {
+            "seconds": round(elapsed, 2),
+            "images": self.done,
+            "images_per_s": round(rate, 1),
+            "read_files_per_s": round(reads, 1),
+            "decode_capacity_per_s": round(capacity, 1),
+            "io_threads": self.io_threads,
+            "decode_workers": self.decode_workers,
+            "max_in_flight": self.max_in_flight,
+        }
 
     def close(self):
         if self.verbose and self.total:
@@ -353,7 +409,7 @@ class CachedImageDataset:
     The arrays are opened lazily in each process, so DataLoader workers do not copy them."""
 
     def __init__(self, out_dir):
-        self.cache = ImageCache(out_dir)            # raises if the cache is not finished
+        self.cache = ImageCache(out_dir)  # raises if the cache is not finished
         self.out_dir = self.cache.out_dir
         self._images = self._labels = None
 
@@ -367,6 +423,7 @@ class CachedImageDataset:
 
     def __getitem__(self, i):
         import torch
+
         self._open()
         # np.array copies: the memory-mapped file is read-only and must stay unchanged
         image = torch.from_numpy(np.array(self._images[i].transpose(2, 0, 1)))

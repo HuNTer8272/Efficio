@@ -27,8 +27,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 loss_fn = nn.CrossEntropyLoss()
 
 # A budget of "20s" with a 10s safety margin stops after about 10 seconds
-run = efficio.Run(budget=args.budget, checkpoint_dir="./efficio_checkpoints",
-                  save_every_minutes=1)
+run = efficio.Run(budget=args.budget, checkpoint_dir="./efficio_checkpoints", save_every_minutes=1)
 run.budget.safety_margin_seconds = 10
 model, optimizer = run.prepare(model, optimizer)
 

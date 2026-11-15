@@ -38,7 +38,7 @@ from torch.utils.data import DataLoader
 import efficio
 from efficio.storage import open_storage, sha256_file
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # also under %run
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # also under %run
 from verify_light_resume import (  # noqa: E402
     ACC_FLOOR,
     LOSS_FLOOR,
@@ -53,16 +53,21 @@ SETTINGS = "verify_cloud_resume.json"
 BATCH = 64
 
 
-def train(ckpt_dir, cfg, storage=None, resume=True, stop_at=None, after_prepare=None,
-          budget=None):
+def train(ckpt_dir, cfg, storage=None, resume=True, stop_at=None, after_prepare=None, budget=None):
     """Returns the finished (or stopped) run and its model."""
     torch.manual_seed(0)
     loader = DataLoader(data(cfg["n"]), batch_size=BATCH, shuffle=True, drop_last=True)
     model = resnet18()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg["total_steps"])
-    run = efficio.Run(checkpoint_dir=ckpt_dir, checkpoint_mode=cfg["mode"], storage=storage,
-                      resume=resume, budget=budget, verbose=storage is not None)
+    run = efficio.Run(
+        checkpoint_dir=ckpt_dir,
+        checkpoint_mode=cfg["mode"],
+        storage=storage,
+        resume=resume,
+        budget=budget,
+        verbose=storage is not None,
+    )
     if cfg["deterministic"]:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
@@ -75,7 +80,7 @@ def train(ckpt_dir, cfg, storage=None, resume=True, stop_at=None, after_prepare=
         run.backward(loss)
         run.step()
         if stop_at is not None and run.state.step == stop_at:
-            run.budget.safety_margin_seconds = 0          # the time budget runs out now
+            run.budget.safety_margin_seconds = 0  # the time budget runs out now
             run.budget.total_seconds = max(run.budget.elapsed() - 1.0, 1e-6)
     return run, model
 
@@ -89,21 +94,31 @@ def report(checks):
 def phase_start(args, cfg, tmp):
     stop_at = None if args.budget else cfg["steps_per_epoch"] + cfg["steps_per_epoch"] // 2
     print(f"\n=== phase start: training until the time budget stops it, storage {args.storage}")
-    run, _ = train(os.path.join(tmp, "start"), cfg, storage=args.storage, resume=False,
-                   stop_at=stop_at, budget=args.budget)
+    run, _ = train(
+        os.path.join(tmp, "start"),
+        cfg,
+        storage=args.storage,
+        resume=False,
+        stop_at=stop_at,
+        budget=args.budget,
+    )
     entry = run.remote.latest()
     run.remote.storage.upload(_write_json(tmp, cfg), SETTINGS)
     status = (run._final_upload or (None, None))[1]
-    print(f"stopped at step {run.state.step} of {cfg['total_steps']} (epoch {run.state.epoch}, "
-          f"batch {run.state.batch_in_epoch}); latest in storage: "
-          f"{entry and entry['file']} (step {entry and entry['step']})")
-    return report({
-        "stopped by the time budget mid-run": run.should_stop
-                                              and 0 < run.state.step < cfg["total_steps"],
-        "stop checkpoint upload confirmed before training returned": status == "ok",
-        "manifest's latest checkpoint is the stop checkpoint": entry is not None
-                                                               and entry["step"] == run.state.step,
-    })
+    print(
+        f"stopped at step {run.state.step} of {cfg['total_steps']} (epoch {run.state.epoch}, "
+        f"batch {run.state.batch_in_epoch}); latest in storage: "
+        f"{entry and entry['file']} (step {entry and entry['step']})"
+    )
+    return report(
+        {
+            "stopped by the time budget mid-run": run.should_stop
+            and 0 < run.state.step < cfg["total_steps"],
+            "stop checkpoint upload confirmed before training returned": status == "ok",
+            "manifest's latest checkpoint is the stop checkpoint": entry is not None
+            and entry["step"] == run.state.step,
+        }
+    )
 
 
 def _write_json(tmp, cfg):
@@ -131,8 +146,9 @@ def phase_finish(args, tmp):
         path = run.ckpt.latest()
         info["sha256"] = sha256_file(path) if path else None
 
-    resumed, model = train(os.path.join(tmp, "finish"), cfg, storage=args.storage,
-                           after_prepare=after_prepare)
+    resumed, model = train(
+        os.path.join(tmp, "finish"), cfg, storage=args.storage, after_prepare=after_prepare
+    )
     entry = info["downloaded"] or {}
     loss, acc = evaluate(model, cfg["n"])
 
@@ -141,8 +157,10 @@ def phase_finish(args, tmp):
     ref_loss, ref_acc = evaluate(ref_model, cfg["n"])
 
     stop = entry.get("step")
-    print(f"\n=== noise baseline: stopped at step {stop} on this machine, resumed with "
-          f"{NOISE:g} relative weight noise")
+    print(
+        f"\n=== noise baseline: stopped at step {stop} on this machine, resumed with "
+        f"{NOISE:g} relative weight noise"
+    )
     noise_dir = os.path.join(tmp, "noise")
     stopped, _ = train(noise_dir, cfg, stop_at=stop - 1 if stop else None)
     _, noise_model = train(noise_dir, cfg, after_prepare=lambda run, m: add_noise(m, NOISE))
@@ -153,55 +171,83 @@ def phase_finish(args, tmp):
     loss_limit = max(3 * noise_loss_gap, LOSS_FLOOR)
     acc_limit = max(3 * noise_acc_gap, ACC_FLOOR)
     here = resumed.hw.platform
-    print(f"\ncheckpoint {entry.get('file')} saved on {entry.get('platform')} at "
-          f"{entry.get('time')}, {entry.get('mode')} mode; resumed here on {here}")
+    print(
+        f"\ncheckpoint {entry.get('file')} saved on {entry.get('platform')} at "
+        f"{entry.get('time')}, {entry.get('mode')} mode; resumed here on {here}"
+    )
     if entry.get("platform") == here:
-        print("note: both phases ran on the same platform; for the cross-platform check run "
-              "phase start on Kaggle and phase finish on Colab (or the other way round)")
-    print(f"resumed at step {info['resumed_step']}, ended at step {resumed.state.step}; "
-          f"uninterrupted ended at {ref_run.state.step}")
+        print(
+            "note: both phases ran on the same platform; for the cross-platform check run "
+            "phase start on Kaggle and phase finish on Colab (or the other way round)"
+        )
+    print(
+        f"resumed at step {info['resumed_step']}, ended at step {resumed.state.step}; "
+        f"uninterrupted ended at {ref_run.state.step}"
+    )
     print("final loss / accuracy:")
     print(f"  uninterrupted  {ref_loss:.4f} / {ref_acc:.1f}%")
     print(f"  resumed        {loss:.4f} / {acc:.1f}%  (gap {loss_gap:.4f} / {acc_gap:.1f})")
-    print(f"  noise baseline {noise_loss:.4f} / {noise_acc:.1f}%  "
-          f"(gap {noise_loss_gap:.4f} / {noise_acc_gap:.1f})")
-    return report({
-        "resumed from the stored checkpoint (downloaded, local folder was empty)":
-            bool(entry) and resumed._resumed_from is not None,
-        "resumed at the stop step": info["resumed_step"] == stop,
-        "sha256 of the downloaded file matches the manifest":
-            info["sha256"] is not None and info["sha256"] == entry.get("sha256"),
-        "same final step as the uninterrupted run":
-            resumed.state.step == ref_run.state.step == cfg["total_steps"],
-        "noise baseline stopped at the same step": stopped.state.step == stop,
-        f"final loss gap <= {loss_limit:.4f} (3x noise gap, floor {LOSS_FLOOR})":
-            loss_gap <= loss_limit,
-        f"final accuracy gap <= {acc_limit:.1f} points (3x noise gap, floor {ACC_FLOOR})":
-            acc_gap <= acc_limit,
-    })
+    print(
+        f"  noise baseline {noise_loss:.4f} / {noise_acc:.1f}%  "
+        f"(gap {noise_loss_gap:.4f} / {noise_acc_gap:.1f})"
+    )
+    return report(
+        {
+            "resumed from the stored checkpoint (downloaded, local folder was empty)": bool(entry)
+            and resumed._resumed_from is not None,
+            "resumed at the stop step": info["resumed_step"] == stop,
+            "sha256 of the downloaded file matches the manifest": info["sha256"] is not None
+            and info["sha256"] == entry.get("sha256"),
+            "same final step as the uninterrupted run": resumed.state.step
+            == ref_run.state.step
+            == cfg["total_steps"],
+            "noise baseline stopped at the same step": stopped.state.step == stop,
+            f"final loss gap <= {loss_limit:.4f} (3x noise gap, floor {LOSS_FLOOR})": loss_gap
+            <= loss_limit,
+            f"final accuracy gap <= {acc_limit:.1f} pts (3x noise gap, floor {ACC_FLOOR})": acc_gap
+            <= acc_limit,
+        }
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=("start", "finish", "both"), required=True)
-    parser.add_argument("--storage", required=True,
-                        help="hf://<user>/<repo>, or a folder such as a mounted Drive folder")
+    parser.add_argument(
+        "--storage",
+        required=True,
+        help="hf://<user>/<repo>, or a folder such as a mounted Drive folder",
+    )
     parser.add_argument("--mode", default="exact", choices=("exact", "light", "smallest"))
-    parser.add_argument("--budget", help='phase start: a real time budget, e.g. "11m" '
-                        "(stops 10 minutes before its end); default: run out mid-epoch 2")
-    parser.add_argument("--deterministic", action="store_true",
-                        help="deterministic cuDNN (slower; the gap rule works without it)")
+    parser.add_argument(
+        "--budget",
+        help='phase start: a real time budget, e.g. "11m" '
+        "(stops 10 minutes before its end); default: run out mid-epoch 2",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="deterministic cuDNN (slower; the gap rule works without it)",
+    )
     parser.add_argument("--quick", action="store_true", help="small run (CPU smoke test)")
     parser.add_argument("--n", type=int, help="number of samples (default 4096, quick 256)")
     parser.add_argument("--epochs", type=int, help="epochs (default 3, quick 2)")
-    args, _ = parser.parse_known_args()          # a notebook kernel passes its own arguments
+    args, _ = parser.parse_known_args()  # a notebook kernel passes its own arguments
     n, epochs = (256, 2) if args.quick else (4096, 3)
     n, epochs = args.n or n, args.epochs or epochs
-    cfg = {"n": n, "epochs": epochs, "mode": args.mode, "deterministic": args.deterministic,
-           "steps_per_epoch": n // BATCH, "total_steps": epochs * (n // BATCH)}
+    cfg = {
+        "n": n,
+        "epochs": epochs,
+        "mode": args.mode,
+        "deterministic": args.deterministic,
+        "steps_per_epoch": n // BATCH,
+        "total_steps": epochs * (n // BATCH),
+    }
     print(f"efficio {efficio.__version__} from {os.path.dirname(efficio.__file__)}")
-    print(f"torch {torch.__version__}, GPU: "
-          f"{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}")
+    print(
+        f"torch {torch.__version__}, GPU: "
+        f"{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}"
+    )
 
     results = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -215,5 +261,5 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
-    if "ipykernel" not in sys.modules:             # run in a notebook cell: no exit
+    if "ipykernel" not in sys.modules:  # run in a notebook cell: no exit
         sys.exit(exit_code)

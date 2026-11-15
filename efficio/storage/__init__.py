@@ -21,18 +21,29 @@ def open_storage(spec):
     if isinstance(spec, Storage):
         return spec
     if isinstance(spec, str) and spec.startswith("hf://"):
-        parts = spec[len("hf://"):].strip("/").split("/")
+        parts = spec[len("hf://") :].strip("/").split("/")
         if len(parts) < 2 or not all(parts[:2]):
             raise ValueError('Hugging Face storage looks like "hf://<user>/<repo-name>"')
         return HuggingFaceHub("/".join(parts[:2]), path="/".join(parts[2:]))
     if isinstance(spec, (str, os.PathLike)):
         if "://" in os.fspath(spec):
-            raise ValueError("storage must be hf://<user>/<repo>, a folder path (such as a "
-                             "mounted Google Drive folder) or a Storage object")
+            raise ValueError(
+                "storage must be hf://<user>/<repo>, a folder path (such as a "
+                "mounted Google Drive folder) or a Storage object"
+            )
         return LocalFolder(spec)
-    raise TypeError(f"storage must be a string, a path or a Storage object, not "
-                    f"{type(spec).__name__}")
+    raise TypeError(
+        f"storage must be a string, a path or a Storage object, not {type(spec).__name__}"
+    )
 
 
-__all__ = ["Storage", "StorageError", "LocalFolder", "HuggingFaceHub", "RemoteCheckpoints",
-           "open_storage", "sha256_file", "MANIFEST"]
+__all__ = [
+    "Storage",
+    "StorageError",
+    "LocalFolder",
+    "HuggingFaceHub",
+    "RemoteCheckpoints",
+    "open_storage",
+    "sha256_file",
+    "MANIFEST",
+]

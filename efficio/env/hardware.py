@@ -7,8 +7,9 @@ from .detect import SESSION_LIMITS, detect_platform
 def detect_hardware() -> HardwareInfo:
     """Platform, GPU name, count, memory and compute capability, as a HardwareInfo."""
     platform = detect_platform()
-    info = HardwareInfo(platform=platform, device="cpu",
-                        session_limit_hours=SESSION_LIMITS[platform])
+    info = HardwareInfo(
+        platform=platform, device="cpu", session_limit_hours=SESSION_LIMITS[platform]
+    )
     try:
         import torch
     except ImportError:
@@ -34,6 +35,8 @@ def describe(info: HardwareInfo) -> str:
     if info.device == "cpu":
         return f"[efficio] {info.platform}: no GPU found, running on CPU (fp32)"
     major, minor = info.compute_capability
-    return (f"[efficio] {info.platform}: {info.gpu_count}x {info.gpu_name} "
-            f"({info.vram_gb} GB, compute {major}.{minor}) "
-            f"-> using {info.precision}")
+    return (
+        f"[efficio] {info.platform}: {info.gpu_count}x {info.gpu_name} "
+        f"({info.vram_gb} GB, compute {major}.{minor}) "
+        f"-> using {info.precision}"
+    )

@@ -43,11 +43,19 @@ def parse_args():
     p.add_argument("--cache", default="./image_cache", help="where the decoded cache goes")
     p.add_argument("--size", type=int, default=224)
     p.add_argument("--grayscale", action="store_true", help="store 1 channel (e.g. X-rays)")
-    p.add_argument("--io-threads", type=int, default=32,
-                   help="parallel file reads for the cache build (raise on slow storage)")
+    p.add_argument(
+        "--io-threads",
+        type=int,
+        default=32,
+        help="parallel file reads for the cache build (raise on slow storage)",
+    )
     p.add_argument("--model", default="resnet18", choices=["resnet18", "resnet50", "densenet121"])
-    p.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=None,
-                   help="ImageNet weights (default: on, off with --fake)")
+    p.add_argument(
+        "--pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="ImageNet weights (default: on, off with --fake)",
+    )
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--workers", type=int, default=2, help="DataLoader workers")
@@ -60,7 +68,7 @@ def parse_args():
         args.labels = args.labels or os.path.join(args.images, "labels.csv")
         args.size = min(args.size, 64)
         args.grayscale = True
-        args.pretrained = bool(args.pretrained)      # no weight download for the demo
+        args.pretrained = bool(args.pretrained)  # no weight download for the demo
     elif not (args.images and args.labels):
         p.error("--images and --labels are required (or use --fake)")
     if args.pretrained is None:
@@ -71,6 +79,7 @@ def parse_args():
 def make_fake_dataset(folder, csv_path, n=300, n_labels=3):
     """n random grayscale PNGs of different sizes with multi-hot labels."""
     from PIL import Image
+
     if os.path.exists(csv_path):
         return
     os.makedirs(folder, exist_ok=True)
@@ -80,7 +89,8 @@ def make_fake_dataset(folder, csv_path, n=300, n_labels=3):
         h, w = rng.integers(80, 140, 2)
         name = f"img_{i:04d}.png"
         Image.fromarray(rng.integers(0, 256, (h, w), dtype=np.uint8), "L").save(
-            os.path.join(folder, name))
+            os.path.join(folder, name)
+        )
         rows.append([name, *rng.integers(0, 2, n_labels).tolist()])
     with open(csv_path, "w", newline="") as f:
         csv.writer(f).writerows([["filename"] + [f"label_{k}" for k in range(n_labels)]] + rows)
@@ -114,8 +124,12 @@ def auroc(scores, targets):
     for k in range(targets.shape[1]):
         pos, neg = scores[targets[:, k] == 1, k], scores[targets[:, k] == 0, k]
         if len(pos) and len(neg):
-            aucs.append(((pos[:, None] > neg[None, :]).float().mean()
-                         + 0.5 * (pos[:, None] == neg[None, :]).float().mean()).item())
+            aucs.append(
+                (
+                    (pos[:, None] > neg[None, :]).float().mean()
+                    + 0.5 * (pos[:, None] == neg[None, :]).float().mean()
+                ).item()
+            )
     return sum(aucs) / len(aucs) if aucs else float("nan")
 
 
@@ -128,27 +142,50 @@ def main():
     # 1. Decode and resize once (resumable; returns at once if the cache is already there)
     split = int(0.9 * len(paths))
     size = (args.size, args.size)
-    ImageCache.build(paths[:split], labels[:split], os.path.join(args.cache, "train"),
-                     size=size, grayscale=args.grayscale, io_threads=args.io_threads)
-    ImageCache.build(paths[split:], labels[split:], os.path.join(args.cache, "val"),
-                     size=size, grayscale=args.grayscale, io_threads=args.io_threads)
+    ImageCache.build(
+        paths[:split],
+        labels[:split],
+        os.path.join(args.cache, "train"),
+        size=size,
+        grayscale=args.grayscale,
+        io_threads=args.io_threads,
+    )
+    ImageCache.build(
+        paths[split:],
+        labels[split:],
+        os.path.join(args.cache, "val"),
+        size=size,
+        grayscale=args.grayscale,
+        io_threads=args.io_threads,
+    )
 
     # 2. Plain DataLoaders over uint8 arrays: no decoding, almost no CPU work
-    train = DataLoader(CachedImageDataset(os.path.join(args.cache, "train")),
-                       batch_size=args.batch_size, shuffle=True, drop_last=True,
-                       num_workers=args.workers)
-    val = DataLoader(CachedImageDataset(os.path.join(args.cache, "val")),
-                     batch_size=args.batch_size, num_workers=args.workers)
+    train = DataLoader(
+        CachedImageDataset(os.path.join(args.cache, "train")),
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=args.workers,
+    )
+    val = DataLoader(
+        CachedImageDataset(os.path.join(args.cache, "val")),
+        batch_size=args.batch_size,
+        num_workers=args.workers,
+    )
 
     # 3. Conversion and augmentation on the GPU
     to_model = [A.ToFloat()] + ([A.RepeatChannels(3)] if args.grayscale else [])
     normalize = A.Normalize(IMAGENET_MEAN, IMAGENET_STD)
-    augment = A.Compose(to_model + [
-        A.RandomResizedCrop(args.size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-        A.RandomAffine(degrees=7, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-        A.RandomHorizontalFlip(),
-        A.RandomBrightnessContrast(0.1, 0.1),
-        normalize])
+    augment = A.Compose(
+        to_model
+        + [
+            A.RandomResizedCrop(args.size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+            A.RandomAffine(degrees=7, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+            A.RandomHorizontalFlip(),
+            A.RandomBrightnessContrast(0.1, 0.1),
+            normalize,
+        ]
+    )
     for_eval = A.Compose(to_model + [normalize])
 
     n_out = labels.shape[1] if multi_label else int(labels.max()) + 1
@@ -158,8 +195,8 @@ def main():
 
     run = efficio.Run(budget=args.budget, checkpoint_dir=args.checkpoint_dir)
     if args.fake:
-        run.budget.safety_margin_seconds = 15        # tiny demo budgets
-    model, optimizer = run.prepare(model, optimizer)   # resumes if a checkpoint exists
+        run.budget.safety_margin_seconds = 15  # tiny demo budgets
+    model, optimizer = run.prepare(model, optimizer)  # resumes if a checkpoint exists
 
     for x, y in run.loop(train, epochs=args.epochs, gpu_transform=efficio.on_inputs(augment)):
         with run.autocast():
@@ -184,5 +221,5 @@ def main():
     run.report()
 
 
-if __name__ == "__main__":          # needed for DataLoader workers on Windows/macOS
+if __name__ == "__main__":  # needed for DataLoader workers on Windows/macOS
     main()

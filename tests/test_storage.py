@@ -55,7 +55,7 @@ class FakeStorage(Storage):
         if self.fail_uploads and name != MANIFEST:
             self.fail_uploads -= 1
             if self.partial:
-                self.files[name] = data[:len(data) // 2]
+                self.files[name] = data[: len(data) // 2]
             raise ConnectionError("network down")
         self.files[name] = data
 
@@ -77,6 +77,7 @@ def hardware(monkeypatch):
 
     def use(platform="local"):
         monkeypatch.setattr(run_module, "detect_hardware", lambda: HardwareInfo(platform, "cpu"))
+
     use()
     return use
 
@@ -95,8 +96,16 @@ def _model(frozen=False, width=32):
     return model
 
 
-def _train(ckpt_dir, storage=None, epochs=2, stop_at=None, frozen=False, width=32,
-           optim=torch.optim.Adam, **kwargs):
+def _train(
+    ckpt_dir,
+    storage=None,
+    epochs=2,
+    stop_at=None,
+    frozen=False,
+    width=32,
+    optim=torch.optim.Adam,
+    **kwargs,
+):
     """Train 4 steps per epoch. stop_at: the time budget runs out after that step (the run
     stops and saves at the next one). width and optim make a different run."""
     model = _model(frozen, width)
@@ -128,10 +137,11 @@ def _ckpts(store):
 
 # ---------- uploads and the manifest ----------
 
+
 def test_upload_download_round_trip_and_manifest(tmp_path, hardware):
     store = FakeStorage()
     run, _ = _train(tmp_path / "local", store, epochs=1)
-    entry, = _manifest(store)["checkpoints"]
+    (entry,) = _manifest(store)["checkpoints"]
     local = run.ckpt.stats["last_path"]
     with open(local, "rb") as f:
         data = f.read()
@@ -152,7 +162,7 @@ def test_local_folder_backend_copies_atomically(tmp_path, hardware):
     remote = tmp_path / "drive_folder"
     run, _ = _train(tmp_path / "local", str(remote), epochs=1)
     names = sorted(os.listdir(remote))
-    assert names == ["ckpt_step000000004.pt", MANIFEST]          # no .partial files left
+    assert names == ["ckpt_step000000004.pt", MANIFEST]  # no .partial files left
     assert run.remote.storage.read_manifest()["checkpoints"][0]["file"] == names[0]
 
 
@@ -167,14 +177,14 @@ def test_retention_keeps_the_newest_remote_checkpoints(tmp_path, hardware):
 
 def test_half_upload_never_becomes_latest(tmp_path, hardware, capsys):
     store = FakeStorage()
-    _train(tmp_path / "a", store, epochs=1)                         # step 4 uploaded
+    _train(tmp_path / "a", store, epochs=1)  # step 4 uploaded
     store.fail_uploads, store.partial = 99, True
-    run, _ = _train(tmp_path / "a", store, epochs=2)                # step 8: upload breaks
+    run, _ = _train(tmp_path / "a", store, epochs=2)  # step 8: upload breaks
     assert run.state.step == 8 and "UPLOAD FAILED" in capsys.readouterr().out
     assert [e["step"] for e in _manifest(store)["checkpoints"]] == [4]
-    assert "ckpt_step000000008.pt" in store.files                   # the half file is there
+    assert "ckpt_step000000008.pt" in store.files  # the half file is there
     store.fail_uploads = 0
-    fresh, _ = _train(tmp_path / "b", store, epochs=1)              # a new machine
+    fresh, _ = _train(tmp_path / "b", store, epochs=1)  # a new machine
     assert fresh.remote.stats["downloaded"]["step"] == 4
     assert fresh._resumed_from == (1, 0)
 
@@ -183,21 +193,22 @@ def test_sha256_mismatch_is_refused(tmp_path, hardware):
     store = FakeStorage()
     _train(tmp_path / "a", store, epochs=1)
     name = _manifest(store)["checkpoints"][-1]["file"]
-    store.files[name] = store.files[name][:-10] + b"x" * 10           # damaged in storage
+    store.files[name] = store.files[name][:-10] + b"x" * 10  # damaged in storage
     with pytest.raises(StorageError, match="sha256"):
         _train(tmp_path / "b", store, epochs=2)
-    assert os.listdir(tmp_path / "b") == []                         # nothing kept or loaded
+    assert os.listdir(tmp_path / "b") == []  # nothing kept or loaded
 
 
 # ---------- resuming from storage ----------
 
-@pytest.mark.parametrize("mode,frozen", [("exact", False), ("light", False),
-                                         ("smallest", False), ("exact", True),
-                                         ("light", True)])
+
+@pytest.mark.parametrize(
+    "mode,frozen",
+    [("exact", False), ("light", False), ("smallest", False), ("exact", True), ("light", True)],
+)
 def test_resume_from_storage_on_an_empty_machine(tmp_path, hardware, mode, frozen):
     remote = str(tmp_path / "remote")
-    stopped, _ = _train(tmp_path / "kaggle", remote, stop_at=5, frozen=frozen,
-                        checkpoint_mode=mode)
+    stopped, _ = _train(tmp_path / "kaggle", remote, stop_at=5, frozen=frozen, checkpoint_mode=mode)
     assert stopped.should_stop and stopped.state.step == 6
     entry = stopped.remote.latest()
     assert entry["step"] == 6 and entry["mode"] == mode and entry["trainable_only"] is frozen
@@ -216,8 +227,8 @@ def test_resume_from_storage_on_an_empty_machine(tmp_path, hardware, mode, froze
 
 def test_newer_remote_checkpoint_beats_older_local_one(tmp_path, hardware, capsys):
     remote = str(tmp_path / "remote")
-    _train(tmp_path / "home", remote, epochs=1)                     # step 4 at home
-    _train(tmp_path / "colab", remote, epochs=2)                    # step 8 in the cloud
+    _train(tmp_path / "home", remote, epochs=1)  # step 4 at home
+    _train(tmp_path / "colab", remote, epochs=2)  # step 8 in the cloud
     run, _ = _train(tmp_path / "home", remote, epochs=3, verbose=True)
     out = capsys.readouterr().out
     assert run.remote.stats["downloaded"]["step"] == 8 and "newer checkpoint" in out
@@ -232,6 +243,7 @@ def test_local_checkpoint_used_when_not_older(tmp_path, hardware):
 
 
 # ---------- checkpoints of a different run ----------
+
 
 def test_fingerprint_in_manifest_and_meta(tmp_path, hardware):
     run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1)
@@ -253,33 +265,35 @@ def test_other_mode_is_the_same_run(tmp_path, hardware):
 @pytest.mark.parametrize("resume", ["auto", False])
 def test_storage_of_a_different_run_is_refused(tmp_path, hardware, change, resume):
     store = FakeStorage()
-    _train(tmp_path / "a", store, stop_at=5)                        # step 6 in storage
+    _train(tmp_path / "a", store, stop_at=5)  # step 6 in storage
     before = dict(store.files)
     with pytest.raises(StorageInUseError) as error:
         _train(tmp_path / "b", store, epochs=1, resume=resume, **change)
     message = str(error.value)
     assert "fake://bucket (step 6)" in message and "different run" in message
     assert "Adam, 4 parameter tensors, fingerprint " in message
-    assert ("Use a different storage path, or pass overwrite_storage=True to replace that "
-            "run's checkpoints") in message
+    assert (
+        "Use a different storage path, or pass overwrite_storage=True to replace that "
+        "run's checkpoints"
+    ) in message
     assert isinstance(error.value, CheckpointMismatchError)
-    assert store.files == before                                    # nothing written there
+    assert store.files == before  # nothing written there
     assert os.listdir(tmp_path / "b") == []
 
 
 def test_overwrite_storage_replaces_the_other_run(tmp_path, hardware, capsys):
     store = FakeStorage()
-    _train(tmp_path / "a", store, stop_at=5)                        # other run: step 6
+    _train(tmp_path / "a", store, stop_at=5)  # other run: step 6
     run, _ = _train(tmp_path / "b", store, epochs=1, width=16, overwrite_storage=True)
     out = capsys.readouterr().out
     assert "WARNING: overwrite_storage=True: fake://bucket holds 1 checkpoint(s)" in out
     assert run.remote.stats["downloaded"] is None and run._resumed_from is None
-    assert run.state.step == 4                                      # trained from step 0
+    assert run.state.step == 4  # trained from step 0
     entries = _manifest(store)["checkpoints"]
-    assert [e["step"] for e in entries] == [4]                      # only this run's
-    assert _ckpts(store) == ["ckpt_step000000004.pt"]               # other run's file deleted
+    assert [e["step"] for e in entries] == [4]  # only this run's
+    assert _ckpts(store) == ["ckpt_step000000004.pt"]  # other run's file deleted
     assert entries[0]["fingerprint"] == run.ckpt.fingerprint
-    again, _ = _train(tmp_path / "c", store, epochs=2, width=16)    # now this run's storage
+    again, _ = _train(tmp_path / "c", store, epochs=2, width=16)  # now this run's storage
     assert again.remote.stats["downloaded"]["step"] == 4 and again.state.step == 8
 
 
@@ -288,19 +302,19 @@ def test_different_run_in_storage_raises_with_explicit_resume(tmp_path, hardware
     _train(tmp_path / "a", store, epochs=1)
     with pytest.raises(CheckpointMismatchError, match=r"fake://bucket \(step 4\)"):
         _train(tmp_path / "b", store, epochs=1, width=16, resume=True)
-    assert os.listdir(tmp_path / "b") == []                         # nothing downloaded
+    assert os.listdir(tmp_path / "b") == []  # nothing downloaded
 
 
 def test_different_run_on_this_machine_starts_fresh_with_a_warning(tmp_path, hardware, capsys):
-    _train(tmp_path / "local", epochs=3)                            # step 12, another model
+    _train(tmp_path / "local", epochs=3)  # step 12, another model
     run, _ = _train(tmp_path / "local", epochs=1, width=16)
     out = capsys.readouterr().out
     assert "WARNING: not resuming from" in out and "(step 12)" in out
     assert run._resumed_from is None and run.state.step == 4
     aside = [d for d in os.listdir(tmp_path / "local") if d.startswith("other_run_")]
-    assert len(aside) == 1 and os.listdir(tmp_path / "local" / aside[0])   # kept, not deleted
+    assert len(aside) == 1 and os.listdir(tmp_path / "local" / aside[0])  # kept, not deleted
     assert os.path.basename(run.ckpt.latest()) == "ckpt_step000000004.pt"  # this run's own
-    again, _ = _train(tmp_path / "local", epochs=2, width=16)       # and it resumes from it
+    again, _ = _train(tmp_path / "local", epochs=2, width=16)  # and it resumes from it
     assert again._resumed_from == (1, 0) and again.state.step == 8
 
 
@@ -318,19 +332,20 @@ def test_invalid_resume_value(tmp_path, hardware):
 
 # ---------- errors, waiting and retries ----------
 
+
 def test_upload_error_surfaces_at_next_step(tmp_path, hardware):
     store = FakeStorage()
     store.fail_uploads = 99
     with pytest.raises(RuntimeError, match="Uploading a checkpoint to fake://bucket failed"):
         _train(tmp_path / "local", store, epochs=2, save_every_minutes=0)
-    assert os.listdir(tmp_path / "local")                           # the local save is fine
+    assert os.listdir(tmp_path / "local")  # the local save is fine
 
 
 def test_budget_stop_waits_for_the_upload(tmp_path, hardware, capsys):
     store = FakeStorage()
     store.delay = 0.3
     run, _ = _train(tmp_path / "local", store, stop_at=2, verbose=True)
-    assert not run.remote.pending                       # finished before training returned
+    assert not run.remote.pending  # finished before training returned
     assert _manifest(store)["checkpoints"][-1]["step"] == run.state.step == 3
     assert "upload complete: ckpt_step000000003.pt" in capsys.readouterr().out
 
@@ -378,6 +393,7 @@ def test_without_storage_nothing_changes(tmp_path, hardware, capsys):
 
 # ---------- backends and settings ----------
 
+
 def test_open_storage_parses_targets(tmp_path):
     hub = open_storage("hf://alice/my-run/exp1")
     assert isinstance(hub, HuggingFaceHub) and hub.describe() == "hf://alice/my-run/exp1"
@@ -409,6 +425,7 @@ def test_remote_checkpoints_need_keep_of_at_least_one(tmp_path, hardware):
 
 # ---------- Hugging Face Hub (fake huggingface_hub module) ----------
 
+
 @pytest.fixture
 def fake_hub(monkeypatch):
     """A stand-in huggingface_hub module that keeps repos in memory, records the tokens it
@@ -429,8 +446,9 @@ def fake_hub(monkeypatch):
         def repo_info(self, repo_id, repo_type=None):
             return types.SimpleNamespace(private=not hub.public)
 
-        def upload_file(self, path_or_fileobj, path_in_repo, repo_id, repo_type=None,
-                        commit_message=None):
+        def upload_file(
+            self, path_or_fileobj, path_in_repo, repo_id, repo_type=None, commit_message=None
+        ):
             if hub.fail_uploads:
                 hub.fail_uploads -= 1
                 raise RuntimeError(f"401 Client Error for token {self.token}")
@@ -443,8 +461,9 @@ def fake_hub(monkeypatch):
         def delete_file(self, path_in_repo, repo_id, repo_type=None, commit_message=None):
             del hub.repos[repo_id][path_in_repo]
 
-    def hf_hub_download(repo_id, filename, repo_type=None, token=None, local_dir=None,
-                        force_download=False):
+    def hf_hub_download(
+        repo_id, filename, repo_type=None, token=None, local_dir=None, force_download=False
+    ):
         hub.tokens.append(token)
         path = os.path.join(local_dir, *filename.split("/"))
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -458,19 +477,19 @@ def fake_hub(monkeypatch):
     return hub
 
 
-def test_hub_creates_a_private_repo_and_resumes_elsewhere(tmp_path, hardware, fake_hub,
-                                                          monkeypatch):
+def test_hub_creates_a_private_repo_and_resumes_elsewhere(
+    tmp_path, hardware, fake_hub, monkeypatch
+):
     monkeypatch.setenv("HF_TOKEN", SECRET)
     hardware("kaggle")
     stopped, _ = _train(tmp_path / "kaggle", "hf://alice/run1/exp", stop_at=5)
     assert ("create_repo", "alice/run1", True, True) in fake_hub.calls
-    assert sorted(fake_hub.repos["alice/run1"]) == ["exp/ckpt_step000000006.pt",
-                                                    f"exp/{MANIFEST}"]
+    assert sorted(fake_hub.repos["alice/run1"]) == ["exp/ckpt_step000000006.pt", f"exp/{MANIFEST}"]
     hardware("colab")
     resumed, _ = _train(tmp_path / "colab", "hf://alice/run1/exp")
     assert resumed.remote.stats["downloaded"]["platform"] == "kaggle"
     assert resumed.state.step == 8
-    assert set(fake_hub.tokens) == {SECRET}                  # the token reached the library
+    assert set(fake_hub.tokens) == {SECRET}  # the token reached the library
 
 
 def test_hub_warns_about_a_public_repo(fake_hub, capsys):
@@ -481,7 +500,7 @@ def test_hub_warns_about_a_public_repo(fake_hub, capsys):
 
 def test_hub_needs_the_optional_package(monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)
-    with pytest.raises(ImportError, match=r'efficio\[hub\]'):
+    with pytest.raises(ImportError, match=r"efficio\[hub\]"):
         HuggingFaceHub("alice/run1", token="x").connect()
 
 
@@ -494,28 +513,35 @@ def test_token_never_leaks(tmp_path, hardware, fake_hub, monkeypatch, capsys, ca
     else:
         storage = HuggingFaceHub("alice/run1", token=secret)
     caplog.set_level(logging.DEBUG)
-    fake_hub.fail_uploads = 2                                # retried, then it works
+    fake_hub.fail_uploads = 2  # retried, then it works
     run, _ = _train(tmp_path / "local", storage, epochs=1, verbose=True)
     run.report()
-    fake_hub.fail_uploads = 99                               # now every upload fails
+    fake_hub.fail_uploads = 99  # now every upload fails
     failed, _ = _train(tmp_path / "local", run.remote.storage, epochs=2, verbose=True)
     failed.report()
     with pytest.raises(StorageError) as error:
         failed.remote._retry("x", lambda: (_ for _ in ()).throw(RuntimeError(secret)))
-    assert secret in fake_hub.tokens                          # it was used...
+    assert secret in fake_hub.tokens  # it was used...
 
     out = capsys.readouterr()
-    texts = [out.out, out.err, caplog.text, str(error.value), repr(run.remote.storage),
-             json.dumps(run.remote.stats), json.dumps(failed.remote.stats),
-             pickle.dumps(run.remote.storage).decode("latin-1")]
+    texts = [
+        out.out,
+        out.err,
+        caplog.text,
+        str(error.value),
+        repr(run.remote.storage),
+        json.dumps(run.remote.stats),
+        json.dumps(failed.remote.stats),
+        pickle.dumps(run.remote.storage).decode("latin-1"),
+    ]
     assert "UPLOAD FAILED" in out.out and "<hidden>" in out.out
-    for name in os.listdir(tmp_path / "local"):              # local checkpoints
+    for name in os.listdir(tmp_path / "local"):  # local checkpoints
         path = tmp_path / "local" / name
         texts.append(path.read_bytes().decode("latin-1"))
         texts.append(repr(torch.load(path, weights_only=False)["meta"]))
-    for data in fake_hub.repos["alice/run1"].values():       # remote files and the manifest
+    for data in fake_hub.repos["alice/run1"].values():  # remote files and the manifest
         texts.append(data.decode("latin-1"))
-    assert all(secret not in text for text in texts)         # ...but never written or shown
+    assert all(secret not in text for text in texts)  # ...but never written or shown
 
 
 def test_token_lookup_order(monkeypatch):
@@ -538,19 +564,24 @@ def test_token_lookup_order(monkeypatch):
 
 # ---------- auto-shutdown ----------
 
+
 @pytest.fixture
 def colab_runtime(monkeypatch):
-    calls = type("Calls", (list,), {})()                     # a list that can carry .clock
+    calls = type("Calls", (list,), {})()  # a list that can carry .clock
     google = types.ModuleType("google")
     colab = types.ModuleType("google.colab")
     runtime = types.ModuleType("google.colab.runtime")
     runtime.unassign = lambda: calls.append("unassign")
     google.colab, colab.runtime = colab, runtime
-    for name, module in (("google", google), ("google.colab", colab),
-                         ("google.colab.runtime", runtime)):
+    for name, module in (
+        ("google", google),
+        ("google.colab", colab),
+        ("google.colab.runtime", runtime),
+    ):
         monkeypatch.setitem(sys.modules, name, module)
     # A fake clock for the wait after unassign(): sleeping moves it on, nothing really waits.
     from efficio.budget import shutdown
+
     clock = types.SimpleNamespace(now=0.0, slept=0.0, on_sleep=None)
 
     def sleep(seconds):
@@ -559,8 +590,9 @@ def colab_runtime(monkeypatch):
         if clock.on_sleep:
             clock.on_sleep()
 
-    monkeypatch.setattr(shutdown, "time", types.SimpleNamespace(
-        monotonic=lambda: clock.now, sleep=sleep))
+    monkeypatch.setattr(
+        shutdown, "time", types.SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep)
+    )
     calls.clock = clock
     return calls
 
@@ -572,15 +604,16 @@ class _RuntimeGone(BaseException):
 def test_shutdown_after_a_confirmed_final_upload(tmp_path, hardware, colab_runtime, capsys):
     hardware("colab")
     run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True)
-    assert colab_runtime == []                              # not before report()
+    assert colab_runtime == []  # not before report()
 
     def gone():
         raise _RuntimeGone
-    colab_runtime.clock.on_sleep = gone                     # the machine goes away while waiting
+
+    colab_runtime.clock.on_sleep = gone  # the machine goes away while waiting
     after_report = []
     with pytest.raises(_RuntimeGone):
         run.report()
-        after_report.append("ran")                          # code after report() must not run
+        after_report.append("ran")  # code after report() must not run
     assert colab_runtime == ["unassign"] and after_report == []
     assert "still running" not in capsys.readouterr().out
 
@@ -590,8 +623,10 @@ def test_shutdown_warns_if_the_runtime_stays(tmp_path, hardware, colab_runtime, 
     run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True)
     run.report()
     assert colab_runtime == ["unassign"] and colab_runtime.clock.slept >= 60
-    assert "WARNING: shutdown_when_done: the Colab runtime is still running 60 s" in \
-        capsys.readouterr().out
+    assert (
+        "WARNING: shutdown_when_done: the Colab runtime is still running 60 s"
+        in capsys.readouterr().out
+    )
 
 
 def test_no_shutdown_when_the_upload_failed(tmp_path, hardware, colab_runtime, capsys):
@@ -612,12 +647,15 @@ def test_no_shutdown_without_storage_or_when_not_asked(tmp_path, hardware, colab
     assert colab_runtime == []
 
 
-@pytest.mark.parametrize("platform,text", [("kaggle", "can't be stopped from code"),
-                                           ("local", "nothing to shut down")])
-def test_shutdown_not_supported_off_colab(tmp_path, hardware, colab_runtime, capsys,
-                                          platform, text):
+@pytest.mark.parametrize(
+    "platform,text", [("kaggle", "can't be stopped from code"), ("local", "nothing to shut down")]
+)
+def test_shutdown_not_supported_off_colab(
+    tmp_path, hardware, colab_runtime, capsys, platform, text
+):
     hardware(platform)
-    run, _ = _train(tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True,
-                    verbose=True)
+    run, _ = _train(
+        tmp_path / "local", FakeStorage(), epochs=1, shutdown_when_done=True, verbose=True
+    )
     run.report()
     assert colab_runtime == [] and text in capsys.readouterr().out

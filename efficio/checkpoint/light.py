@@ -21,8 +21,8 @@ Small tensors and scalars (such as Adam's step counter) are stored exactly.
 
 import torch
 
-BLOCK = 128              # values per quantization block
-MIN_QUANT_NUMEL = 1024   # smaller optimizer tensors are stored exactly
+BLOCK = 128  # values per quantization block
+MIN_QUANT_NUMEL = 1024  # smaller optimizer tensors are stored exactly
 FP16_MAX = 65504.0
 _SQRT_KEYS = ("exp_avg_sq", "max_exp_avg_sq")
 _TAG = "__efficio_q8__"
@@ -41,8 +41,13 @@ def quantize_blockwise(t, block=BLOCK):
     absmax = blocks.abs().amax(dim=1)
     scale = torch.where(absmax > 0, absmax / 127.0, torch.ones_like(absmax))
     q = torch.round(blocks / scale[:, None]).clamp_(-127, 127).to(torch.int8)
-    return {"q": q.reshape(-1)[:n].clone(), "absmax": absmax.clone(), "block": block,
-            "shape": tuple(t.shape), "dtype": _name(t.dtype)}
+    return {
+        "q": q.reshape(-1)[:n].clone(),
+        "absmax": absmax.clone(),
+        "block": block,
+        "shape": tuple(t.shape),
+        "dtype": _name(t.dtype),
+    }
 
 
 def dequantize_blockwise(packed):
@@ -69,8 +74,11 @@ def encode_model(state_dict):
     """fp16 copy of floating-point weights; returns (tensors, original dtypes)."""
     out, dtypes = {}, {}
     for name, t in state_dict.items():
-        if (torch.is_tensor(t) and t.dtype in (torch.float32, torch.float64)
-                and (t.numel() == 0 or t.abs().max().item() <= FP16_MAX)):
+        if (
+            torch.is_tensor(t)
+            and t.dtype in (torch.float32, torch.float64)
+            and (t.numel() == 0 or t.abs().max().item() <= FP16_MAX)
+        ):
             out[name] = t.to(torch.float16)
             dtypes[name] = _name(t.dtype)
         else:
@@ -80,8 +88,9 @@ def encode_model(state_dict):
 
 def decode_model(tensors, dtypes):
     """Cast fp16 weights back to the dtypes they had when saved."""
-    return {name: t.to(_dtype(dtypes[name])) if name in dtypes else t
-            for name, t in tensors.items()}
+    return {
+        name: t.to(_dtype(dtypes[name])) if name in dtypes else t for name, t in tensors.items()
+    }
 
 
 # ---------------------------------------------------------------- optimizer state
@@ -100,22 +109,33 @@ def encode_optimizer(opt_state_dict):
         enc = {}
         for key, t in entries.items():
             if key in _SQRT_KEYS and _quantizable(t):
-                enc[key] = {**quantize_blockwise(t.float().clamp_min(0).sqrt()), _TAG: "sqrt",
-                            "dtype": _name(t.dtype)}
+                enc[key] = {
+                    **quantize_blockwise(t.float().clamp_min(0).sqrt()),
+                    _TAG: "sqrt",
+                    "dtype": _name(t.dtype),
+                }
             elif _quantizable(t):
                 enc[key] = {_TAG: "linear", **quantize_blockwise(t)}
             else:
                 enc[key] = t
         m, v = entries.get("exp_avg"), entries.get("exp_avg_sq")
-        if (_quantizable(m) and _quantizable(v) and m.shape == v.shape
-                and enc["exp_avg_sq"].get(_TAG) == "sqrt"):
+        if (
+            _quantizable(m)
+            and _quantizable(v)
+            and m.shape == v.shape
+            and enc["exp_avg_sq"].get(_TAG) == "sqrt"
+        ):
             # The ratio to the true root is Adam's own (bounded) update direction. Decoding
             # multiplies it by the decoded root, so after a resume m / (sqrt(v) + eps) is
             # the saved ratio, off by at most one quantization step.
             eps = eps_of.get(pid, 1e-8)
             ratio = m.float() / (v.float().clamp_min(0).sqrt() + eps)
-            enc["exp_avg"] = {**quantize_blockwise(ratio), _TAG: "ratio", "eps": eps,
-                              "dtype": _name(m.dtype)}
+            enc["exp_avg"] = {
+                **quantize_blockwise(ratio),
+                _TAG: "ratio",
+                "eps": eps,
+                "dtype": _name(m.dtype),
+            }
         state[pid] = enc
     return {**opt_state_dict, "state": state}
 
@@ -125,17 +145,18 @@ def decode_optimizer(opt_state_dict):
     state = {}
     for pid, entries in opt_state_dict.get("state", {}).items():
         dec = {}
-        for key, val in entries.items():                    # sqrt and linear first
+        for key, val in entries.items():  # sqrt and linear first
             if isinstance(val, dict) and val.get(_TAG) == "sqrt":
                 dec[key] = dequantize_blockwise(val).pow(2).to(_dtype(val["dtype"]))
             elif isinstance(val, dict) and val.get(_TAG) == "linear":
                 dec[key] = dequantize_blockwise(val).to(_dtype(val["dtype"]))
             elif not (isinstance(val, dict) and val.get(_TAG) == "ratio"):
                 dec[key] = val
-        for key, val in entries.items():                    # then ratios, which need them
+        for key, val in entries.items():  # then ratios, which need them
             if isinstance(val, dict) and val.get(_TAG) == "ratio":
                 root = dec["exp_avg_sq"].float().sqrt()
                 dec[key] = (dequantize_blockwise(val) * (root + val["eps"])).to(
-                    _dtype(val["dtype"]))
+                    _dtype(val["dtype"])
+                )
         state[pid] = dec
     return {**opt_state_dict, "state": state}

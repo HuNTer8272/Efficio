@@ -41,7 +41,7 @@ class HuggingFaceHub(Storage):
     def redact(self, text):
         return redact(text, [self._token])
 
-    def __getstate__(self):                  # never pickle the token or the client
+    def __getstate__(self):  # never pickle the token or the client
         return {**self.__dict__, "_token": None, "_api": None}
 
     def _client(self):
@@ -58,29 +58,42 @@ class HuggingFaceHub(Storage):
             api.create_repo(self.repo_id, repo_type="model", private=self.private, exist_ok=True)
         except Exception as e:
             hint = "" if self._token else "\n" + HOW_TO_ADD
-            raise StorageError(f"Could not open or create the Hugging Face repo {self.repo_id} "
-                               f"({type(e).__name__}: {self.redact(e)}).{hint}") from None
+            raise StorageError(
+                f"Could not open or create the Hugging Face repo {self.repo_id} "
+                f"({type(e).__name__}: {self.redact(e)}).{hint}"
+            ) from None
         try:
             private = api.repo_info(self.repo_id, repo_type="model").private
         except Exception:
             private = None
         log(f"[efficio] Hugging Face token: from {self.token_source}")
         if private is False:
-            log(f"[efficio] WARNING: {self.repo_id} is a PUBLIC repo; anyone can download "
-                "these checkpoints. Make it private in the repo settings.")
+            log(
+                f"[efficio] WARNING: {self.repo_id} is a PUBLIC repo; anyone can download "
+                "these checkpoints. Make it private in the repo settings."
+            )
 
     def upload(self, local_path, name):
-        self._client().upload_file(path_or_fileobj=local_path, path_in_repo=self._full(name),
-                                   repo_id=self.repo_id, repo_type="model",
-                                   commit_message=f"efficio: add {name}")
+        self._client().upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo=self._full(name),
+            repo_id=self.repo_id,
+            repo_type="model",
+            commit_message=f"efficio: add {name}",
+        )
 
     def download(self, name, local_path):
         folder = os.path.dirname(os.path.abspath(local_path))
         tmp = tempfile.mkdtemp(prefix=".efficio-download-", dir=folder)
         try:
-            got = _hub().hf_hub_download(repo_id=self.repo_id, filename=self._full(name),
-                                         repo_type="model", token=self._token, local_dir=tmp,
-                                         force_download=True)
+            got = _hub().hf_hub_download(
+                repo_id=self.repo_id,
+                filename=self._full(name),
+                repo_type="model",
+                token=self._token,
+                local_dir=tmp,
+                force_download=True,
+            )
             shutil.move(got, local_path)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -88,9 +101,14 @@ class HuggingFaceHub(Storage):
     def list(self):
         files = self._client().list_repo_files(self.repo_id, repo_type="model")
         prefix = f"{self.path}/" if self.path else ""
-        return sorted(f[len(prefix):] for f in files
-                      if f.startswith(prefix) and "/" not in f[len(prefix):])
+        return sorted(
+            f[len(prefix) :] for f in files if f.startswith(prefix) and "/" not in f[len(prefix) :]
+        )
 
     def delete(self, name):
-        self._client().delete_file(self._full(name), repo_id=self.repo_id, repo_type="model",
-                                   commit_message=f"efficio: remove {name}")
+        self._client().delete_file(
+            self._full(name),
+            repo_id=self.repo_id,
+            repo_type="model",
+            commit_message=f"efficio: remove {name}",
+        )

@@ -40,7 +40,7 @@ def test_resume_roundtrip(tmp_path):
     mgr = CheckpointManager(str(tmp_path), keep_last=2)
     for step in (1, 2, 3):
         mgr.save(TrainState(epoch=1, step=step), model, opt)
-    assert len(os.listdir(tmp_path)) == 2            # old ones cleaned up
+    assert len(os.listdir(tmp_path)) == 2  # old ones cleaned up
 
     model2 = torch.nn.Linear(4, 2)
     opt2 = torch.optim.AdamW(model2.parameters())

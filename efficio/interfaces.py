@@ -8,14 +8,14 @@ from dataclasses import asdict, dataclass, field
 class HardwareInfo:
     """The platform and GPU a run uses, as found by efficio.detect_hardware()."""
 
-    platform: str                 # "colab", "kaggle" or "local"
-    device: str                   # "cuda" or "cpu"
-    gpu_name: str = "none"        # e.g. "Tesla T4"
+    platform: str  # "colab", "kaggle" or "local"
+    device: str  # "cuda" or "cpu"
+    gpu_name: str = "none"  # e.g. "Tesla T4"
     gpu_count: int = 0
     vram_gb: float = 0.0
     compute_capability: tuple = (0, 0)
-    bf16_native: bool = False     # True only on Ampere (8.0) or newer
-    session_limit_hours: float = 0.0   # 0 = no known limit (local)
+    bf16_native: bool = False  # True only on Ampere (8.0) or newer
+    session_limit_hours: float = 0.0  # 0 = no known limit (local)
 
     @property
     def precision(self) -> str:
@@ -24,7 +24,7 @@ class HardwareInfo:
             return "fp32"
         if self.bf16_native:
             return "bf16"
-        return "fp16"             # T4, P100 and older: fp16 + GradScaler
+        return "fp16"  # T4, P100 and older: fp16 + GradScaler
 
 
 @dataclass
@@ -32,8 +32,8 @@ class Budget:
     """A time budget: total seconds, the safety margin kept for the final save, and the
     start time. Create one with Budget.parse("2h")."""
 
-    total_seconds: float = 0.0             # 0 = no budget
-    safety_margin_seconds: float = 600.0   # stop and save this long before the end
+    total_seconds: float = 0.0  # 0 = no budget
+    safety_margin_seconds: float = 600.0  # stop and save this long before the end
     started_at: float = field(default_factory=time.time)
 
     @classmethod
@@ -53,7 +53,7 @@ class Budget:
                 num = ""
             elif ch != " ":
                 raise ValueError(f"Can't read budget '{text}'. Use e.g. '2h' or '90m'.")
-        if num:                      # bare number = seconds
+        if num:  # bare number = seconds
             total += float(num)
         return cls(total, safety_margin_seconds)
 
@@ -78,8 +78,8 @@ class TrainState:
     checkpoint."""
 
     epoch: int = 0
-    step: int = 0                  # optimizer steps taken in total
-    batch_in_epoch: int = 0        # batches already done in the current epoch
+    step: int = 0  # optimizer steps taken in total
+    batch_in_epoch: int = 0  # batches already done in the current epoch
     batch_size: int = 0
     grad_accum_steps: int = 1
 
