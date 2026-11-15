@@ -1,5 +1,10 @@
 # Efficio
 
+[![PyPI version](https://img.shields.io/pypi/v/efficio)](https://pypi.org/project/efficio/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/efficio)](https://pypi.org/project/efficio/)
+[![Python versions](https://img.shields.io/pypi/pyversions/efficio)](https://pypi.org/project/efficio/)
+[![CI](https://img.shields.io/github/actions/workflow/status/HuNTer8272/Efficio/ci.yml?branch=main&label=CI)](https://github.com/HuNTer8272/Efficio/actions/workflows/ci.yml)
+
 **Get more training out of every GPU hour on Colab, Kaggle and your own GPU.** Efficio is a small PyTorch library that picks the right mixed precision, keeps the GPU fed with data, stops cleanly before your time runs out and resumes exactly where it stopped.
 
 ```bash
@@ -293,14 +298,33 @@ Building the cache took about 36 s on cold files (139 images/s); later runs reus
 
 ## Roadmap
 
-Planned for future releases:
+**Shipped**
 
-- Automatic batch size with out-of-memory recovery
-- A CPU pre-flight check and a budget planner
-- Both Kaggle T4 GPUs
-- Hugging Face Trainer, PyTorch Lightning and TensorFlow/Keras support
-- Telegram and email notifications
-- More benchmarks: a DistilBERT fine-tune and a small LoRA run
+- **0.2.0:** checkpoints that resume across platforms, in three modes (exact, light, smallest); checkpoint storage on the Hugging Face Hub and Google Drive; Colab auto-shutdown once the final checkpoint is stored.
+- **0.1.0:** budget-based stopping, exact resume, mixed precision, DataLoader tuning, GPULoader, ImageCache and the end-of-run report. See the [changelog](https://github.com/HuNTer8272/Efficio/blob/main/CHANGELOG.md) for details.
+
+**0.2.1 (this release)**
+
+- CI on Ubuntu, Windows and macOS
+- Pre-commit with ruff
+- A [troubleshooting guide](https://github.com/HuNTer8272/Efficio/blob/main/docs/TROUBLESHOOTING.md)
+- An updated quick-start notebook
+
+**0.3.0 (next, in progress)**
+
+- Hugging Face Trainer and PyTorch Lightning callback support
+- LoRA/PEFT adapter checkpoints
+- Out-of-memory recovery with automatic batch size adjustment
+- Kaggle 2x T4 DDP support
+
+**Later, not planned in detail**
+
+- Quota awareness
+- Notifications
+- Safe `torch.compile` support
+- Streaming-dataset resume
+- A command-line interface
+- TensorFlow/Keras support
 
 ## Contributing
 

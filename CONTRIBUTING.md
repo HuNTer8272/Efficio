@@ -20,11 +20,14 @@ Efficio supports PyTorch today. TensorFlow/Keras support is planned. Keep `effic
 | `efficio/interfaces.py` | Shared data objects: `HardwareInfo`, `Budget`, `TrainState` |
 | `efficio/run.py` | The `Run` class that ties everything together |
 | `efficio/env/` | Platform detection (Colab, Kaggle, local) and GPU detection |
-| `efficio/checkpoint/` | Atomic checkpoint save and exact resume |
+| `efficio/checkpoint/` | Atomic checkpoint save, exact resume, checkpoint modes (exact, light, smallest) |
+| `efficio/storage/` | Checkpoint storage on the Hugging Face Hub or a folder (such as Google Drive), background upload and manifest |
+| `efficio/budget/shutdown.py` | Colab auto-shutdown (the budget stop itself is in `run.py`) |
 | `efficio/speed/` | DataLoader tuning, channels_last, GPU data pipeline, GPU augmentation |
 | `efficio/data/` | Image cache for large image datasets |
 | `efficio/report/` | Profiler and end-of-run report |
-| `efficio/budget/`, `efficio/adapters/`, `efficio/preflight.py` and other modules marked "Planned" | Planned features; any name used in them raises `NotImplementedError` |
+| `efficio/adapters/`, `efficio/preflight.py` and other modules marked "Planned" | Planned features; any name used in them raises `NotImplementedError` |
+| `docs/` | Documentation, such as the troubleshooting guide |
 | `examples/` | Small runnable examples |
 | `benchmarks/` | Baseline vs Efficio comparisons and their results |
 | `tests/` | pytest tests (CPU only, so they run in CI) |
@@ -36,6 +39,7 @@ git clone https://github.com/HuNTer8272/Efficio.git
 cd Efficio
 pip install -e ".[dev]"
 ruff check .
+ruff format --check .
 pytest -q
 ```
 
@@ -50,14 +54,16 @@ pip install pre-commit
 pre-commit install
 ```
 
-Run `pre-commit run --all-files` to check everything once. CI runs `ruff check .` and `pytest -q` on Ubuntu, Windows and macOS (Python 3.10, 3.11 and 3.12).
+Run `pre-commit run --all-files` to check everything once. The repo is formatted with `ruff format`, and CI fails if a file isn't. To fix formatting by hand, run `ruff format .`.
+
+CI runs `ruff check .` and `pytest -q` on Ubuntu, Windows and macOS (Python 3.10, 3.11 and 3.12). The Ubuntu `test` job also runs `ruff format --check .`.
 
 ## Branches and pull requests
 
-1. Branch from an up-to-date `main`: `feat/<short-name>`, `fix/<short-name>` or `release/<version>`.
+1. Branch from an up-to-date `main`: `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`, `ci/<short-name>`, `style/<short-name>` or `release/<version>`.
 2. Keep each pull request focused on one change.
 3. Before opening a pull request:
-   - `ruff check .` and `pytest -q` pass (CI runs both on Ubuntu, Windows and macOS with Python 3.10, 3.11 and 3.12).
+   - `ruff check .`, `ruff format --check .` and `pytest -q` pass (CI runs the lint and the tests on Ubuntu, Windows and macOS with Python 3.10, 3.11 and 3.12, and the format check on Ubuntu).
    - New features have tests. Changed behavior has updated tests.
    - README feature statuses are accurate. A feature is **Available** only after it has been verified on a GPU; until then it is marked **Available, needs GPU verification**.
    - User-facing changes are listed in `CHANGELOG.md`.
@@ -82,12 +88,10 @@ Run `pre-commit run --all-files` to check everything once. CI runs `ruff check .
 
 ## Cloning in Colab or Kaggle notebooks
 
-If you clone the repo in a notebook with a token in the URL, remove the token immediately after cloning:
+The repo is public, so cloning needs no token:
 
 ```bash
-git clone https://<token>@github.com/HuNTer8272/Efficio.git
-cd Efficio
-git remote set-url origin https://github.com/HuNTer8272/Efficio.git
+git clone https://github.com/HuNTer8272/Efficio.git
 ```
 
-Kaggle publishes `/kaggle/working` when you save a version, so a token left in `.git/config` would be published. Before sharing a notebook or its output, search it for `github_pat_` and `ghp_`.
+Never put a token in a clone URL or in `.git/config`. Kaggle publishes `/kaggle/working` when you save a version, so a token left there would be published. Before sharing a notebook or its output, search it for `github_pat_` and `ghp_`.
