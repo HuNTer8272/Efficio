@@ -2,6 +2,12 @@
 
 All notable changes to Efficio are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- In a run shorter than 2 minutes of training, the report now says why the data-wait, batch-size and setup-time tips are not shown ("Tuning tips (data-wait, batch size, setup time) need about 120s of training to be reliable; this run was Xs. Not shown."). The line appears once, and only when at least one of those tips would have been given in a longer run. The GPULoader and ImageCache tips are unchanged.
+
 ## [0.2.0] - 2026-11-04
 
 Never lose a training run, on any platform. This release adds:

@@ -34,7 +34,7 @@ from .checkpoint.manager import (
 from .data.image_cache import CachedImageDataset
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
-from .report.profiler import GpuUtilSampler, Profiler, tips
+from .report.profiler import GpuUtilSampler, Profiler, tips, withheld_tips_note
 from .speed.dataloader import optimize_loader, seeded_shuffle
 from .speed.gpu_data import GPULoader, fits_on_gpu
 from .speed.memory_format import use_channels_last
@@ -661,6 +661,21 @@ class Run:
         if advice:
             lines.append("  tips:")
             lines += ["    - " + t.replace("\n", "\n        ") for t in advice]
+        note = (
+            withheld_tips_note(
+                prof.data_wait_pct,
+                util,
+                prof.setup_pct,
+                prof.train_s,
+                on_gpu=self.hw.device == "cuda",
+                gpu_loader_fits=self._gpu_loader_fits,
+                image_files=self._image_files,
+            )
+            if prof.steps
+            else None
+        )
+        if note:
+            lines.append("  note: " + note)
         print("\n".join(lines))
         self._maybe_shut_down()
 
