@@ -65,7 +65,9 @@ Runs with the same parameter names and shapes and the same optimizer type have t
 
 ## Resuming on a machine with a different number of GPUs
 
-**What Efficio handles:** Checkpoints are loaded to the CPU first, and the random-number states of the GPUs that both machines have are restored. Resuming a checkpoint from Kaggle 2x T4 on a Colab 1x T4 works (verified on a GPU). The code restores the states of the GPUs both machines have in either direction, and Efficio trains on GPU 0.
+**What Efficio handles:** Checkpoints are loaded to the CPU first, and the random-number states of the GPUs that both machines have are restored. Resuming a checkpoint saved on Kaggle 2x T4 on a Colab 1x T4 works. This is the only direction verified on real hardware.
+
+For other cases (for example 1 GPU to 2 GPUs), this is based on reading the code and on a unit test with a mocked GPU count, not on a test on real hardware: `_set_rng_state` in `efficio/checkpoint/manager.py` restores the CUDA random-number states one GPU at a time, for as many GPUs as both machines have (it does not use `torch.cuda.set_rng_state_all`, which failed on fewer GPUs). Efficio trains on GPU 0.
 
 **What it doesn't handle:** Efficio uses one GPU. It does not split training over several GPUs. Using both Kaggle T4 GPUs is on the roadmap.
 
@@ -96,8 +98,9 @@ Runs with the same parameter names and shapes and the same optimizer type have t
 **Cause:** The batch, model or activations don't fit in memory. Efficio 0.2.x does **not** handle this: it does not catch the error, lower the batch size or retry. Automatic batch size with out-of-memory recovery is on the [roadmap](../README.md#roadmap) and not released yet.
 
 **Workaround:**
-- Lower the batch size in your DataLoader and raise `Run(grad_accum_steps=...)` to keep the effective batch size.
-- Checkpoints still protect the run. After a crash, the latest checkpoint (periodic saves every `save_every_minutes`, default 15) is there, and running the same code again resumes from it. The saved position is an epoch and a batch number, so for a changed batch size start a new run with a different `checkpoint_dir`.
+- A general PyTorch technique, not something Efficio has tested or guarantees: lower the batch size in your DataLoader and raise `Run(grad_accum_steps=...)` to keep the effective batch size.
+- Checkpoints still protect the run. After a crash, the latest checkpoint (periodic saves every `save_every_minutes`, default 15) is there, and running the same code again resumes from it.
+- Efficio saves the position in the epoch as a batch number and skips that many batches when it resumes. It does not compare batch sizes. If you hit issues resuming after changing the batch size, try a fresh `checkpoint_dir`.
 - `checkpoint_mode="light"` or `"smallest"` makes checkpoints smaller, but does not reduce training memory.
 
 ## pip install problems with the hub extra
