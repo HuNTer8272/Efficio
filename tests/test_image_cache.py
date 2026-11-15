@@ -268,14 +268,18 @@ def test_out_of_order_completion_gives_identical_cache(tmp_path, monkeypatch):
     )
     real_read, real_decode = ic._read_file, ic._decode_group
     order = []
+    others_done = threading.Event()  # set once groups 1-7 are decoded
 
     def slow_first(path):
         index = int(os.path.basename(path).split(".")[0])
-        time.sleep(0.2 if index < 4 else 0.0)  # files 0-3 (group 0) are slow
+        if index < 4:  # files 0-3 (group 0) wait for every other group, on any machine
+            assert others_done.wait(timeout=10), "groups 1-7 never finished"
         return real_read(path)
 
     def record(blobs, names, size, grayscale):
         order.append(int(os.path.basename(names[0]).split(".")[0]))
+        if len(order) == 7:  # 8 groups of 5; all but group 0 are decoded
+            others_done.set()
         return real_decode(blobs, names, size, grayscale)
 
     monkeypatch.setattr(ic, "_read_file", slow_first)
