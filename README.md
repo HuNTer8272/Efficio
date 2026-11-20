@@ -59,7 +59,7 @@ Free GPUs on Colab and Kaggle have strict time limits, and much of that time is 
 - **Trainable-only checkpoints** (`Run(save_trainable_only="auto")`): with a frozen backbone, only the trainable parameters are saved, and resuming checks that the frozen weights are the same. Verified on Colab T4. Available since 0.2.0.
 - **Background checkpoint saving** (`Run(async_save=True)`): periodic saves are written in a background thread; budget, shutdown and final saves always finish first. Verified on Colab T4. Available since 0.2.0.
 - **Checkpoints saved to the Hugging Face Hub or Google Drive** (`Run(storage=...)`): background upload after each save, a manifest with sha256 checksums, the last 3 checkpoints kept in storage, budget and final saves that wait for the upload. Hugging Face storage needs `pip install "efficio[hub]"`. Verified on Kaggle (2x T4) and Colab (T4). Available since 0.2.0.
-- **Resume on another machine or platform:** start on Kaggle and continue on Colab, or the other way round. The latest checkpoint is downloaded and its sha256 checked. Verified from Kaggle (2x T4) to Colab (T4). Available since 0.2.0.
+- **Resume on another machine or platform:** start on Kaggle and continue on Colab. The latest checkpoint is downloaded and its sha256 checked. Verified from Kaggle (2x T4) to Colab (T4). Available since 0.2.0.
 - **Auto-shutdown on Colab** (`Run(shutdown_when_done=True)`): releases the runtime after the final checkpoint is confirmed in storage. Verified on Colab T4. Available since 0.2.0.
 - Resume quality of the checkpoint modes was checked on the T4 against a noise baseline (an exact resume with tiny weight noise); see [Checkpoint options](#checkpoint-options).
 
