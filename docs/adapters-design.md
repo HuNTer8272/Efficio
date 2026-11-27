@@ -44,7 +44,9 @@ These `Run` arguments are left out, because the framework owns what they control
 from transformers import Trainer, TrainingArguments
 from efficio.adapters import HFTrainerCallback
 
-efficio_cb = HFTrainerCallback(budget="2h", storage="hf://user/repo")  # create first: the budget clock starts here
+efficio_cb = HFTrainerCallback(
+    budget="2h", storage="hf://user/repo"
+)  # create first: the budget clock starts here
 args = TrainingArguments(output_dir="out", num_train_epochs=3, fp16=True, save_strategy="no")
 trainer = Trainer(model=model, args=args, train_dataset=train_ds, callbacks=[efficio_cb])
 trainer.train(resume_from_checkpoint=efficio_cb.resume_from(trainer))  # None on a fresh start
@@ -57,10 +59,19 @@ efficio_cb.report()
 import lightning.pytorch as pl
 from efficio.adapters import LightningCallback
 
-efficio_cb = LightningCallback(budget="2h", storage="hf://user/repo")  # create first: the budget clock starts here
-trainer = pl.Trainer(max_epochs=20, precision="16-mixed", callbacks=[efficio_cb],
-                     plugins=[efficio_cb.checkpoint_io], enable_checkpointing=False)
-trainer.fit(model, train_loader, ckpt_path=efficio_cb.resume_from(trainer, model))  # None on a fresh start
+efficio_cb = LightningCallback(
+    budget="2h", storage="hf://user/repo"
+)  # create first: the budget clock starts here
+trainer = pl.Trainer(
+    max_epochs=20,
+    precision="16-mixed",
+    callbacks=[efficio_cb],
+    plugins=[efficio_cb.checkpoint_io],
+    enable_checkpointing=False,
+)
+trainer.fit(
+    model, train_loader, ckpt_path=efficio_cb.resume_from(trainer, model)
+)  # None on a fresh start
 efficio_cb.report()
 ```
 
