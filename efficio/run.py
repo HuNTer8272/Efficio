@@ -14,23 +14,14 @@ Usage:
 
 import contextlib
 import itertools
-import os
-import signal
 import time
 
 import torch
 
 from .budget import shutdown
 from .checkpoint import CheckpointManager
-from .checkpoint.manager import (
-    DifferentRunError,
-    StorageInUseError,
-    _efficio_version,
-    _rng_state,
-    _set_rng_state,
-    checkpoint_step,
-    run_fingerprint,
-)
+from .checkpoint.manager import _rng_state, _set_rng_state, run_fingerprint
+from .checkpoint.session import CheckpointSession, open_remote
 from .data.image_cache import CachedImageDataset
 from .env import default_checkpoint_dir, describe, detect_hardware
 from .interfaces import Budget, TrainState
@@ -66,11 +57,13 @@ def _decodes_image_files(dataset):
     return "image" in type(dataset).__name__.lower()
 
 
-def _size(nbytes):
-    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
-        if nbytes >= factor:
-            return f"{nbytes / factor:.1f} {unit}"
-    return f"{nbytes} B"
+def _session_attr(name, doc=None):
+    """A Run attribute kept on its CheckpointSession, so both always agree."""
+    return property(
+        lambda self: getattr(self._session, name),
+        lambda self, value: setattr(self._session, name, value),
+        doc=doc,
+    )
 
 
 def _make_scaler(enabled):
@@ -149,23 +142,33 @@ class Run:
         self.profiler = Profiler()  # setup time is measured from here
         self.hw = detect_hardware()
         self.device = torch.device(self.hw.device)
-        self.budget = Budget.parse(budget)
+        time_budget = Budget.parse(budget)
         self.state = TrainState(grad_accum_steps=grad_accum_steps)
         self.verbose = verbose
-        self.ckpt = CheckpointManager(
+        ckpt = CheckpointManager(
             checkpoint_dir
             or default_checkpoint_dir(self.hw.platform, session_disk=storage is not None),
             mode=checkpoint_mode,
             async_save=async_save,
         )
-        self.remote = self._open_storage(storage, keep_remote) if storage is not None else None
-        self.overwrite_storage = overwrite_storage
-        self.upload_timeout = upload_timeout
-        self._final_upload = None  # (path, status) of the last waited-for upload
+        remote = (
+            open_remote(storage, keep_remote, ckpt.directory, self.hw.platform, self._log)
+            if storage is not None
+            else None
+        )
+        # Resume, save, upload, budget-stop and shutdown decisions; shared with the adapters.
+        self._session = CheckpointSession(
+            ckpt,
+            remote,
+            time_budget,
+            resume=resume,
+            overwrite_storage=overwrite_storage,
+            upload_timeout=upload_timeout,
+            save_every=save_every_minutes * 60,
+            log=self._log,
+        )
         self.shutdown_when_done = shutdown_when_done
         self.save_trainable_only = save_trainable_only
-        self.save_every = save_every_minutes * 60
-        self.resume = resume
         self.optimize_data = optimize_data
         self.channels_last_setting = channels_last
         self.channels_last = False
@@ -178,13 +181,8 @@ class Run:
         self._set_epoch = None
 
         self.model = self.optimizer = self.scheduler = None
-        self._frozen = 0  # frozen parameter tensors, counted in prepare()
         self.scaler = _make_scaler(self.hw.precision == "fp16")
         self._micro = 0  # micro-batches since the last optimizer step
-        self._last_save = time.time()
-        self._stop_reason = None
-        self._signal_received = False
-        self._saves = 0
         self._resumed_from = None
         self._log(describe(self.hw))
         if self.hw.device == "cuda":
@@ -199,19 +197,20 @@ class Run:
         if shutdown_when_done:
             self._log(shutdown.startup_notice(self.hw.platform, self.remote is not None))
 
-    def _open_storage(self, spec, keep):
-        from .storage import LocalFolder, RemoteCheckpoints, open_storage
-
-        backend = open_storage(spec)
-        if isinstance(backend, LocalFolder) and os.path.abspath(backend.path) == os.path.abspath(
-            self.ckpt.directory
-        ):
-            raise ValueError(
-                f"storage ({backend.path}) must be a different folder from "
-                "checkpoint_dir; it holds copies of the checkpoints there"
-            )
-        backend.connect(self._log)
-        return RemoteCheckpoints(backend, keep=keep, platform=self.hw.platform)
+    # Kept on the CheckpointSession; the names are the ones Run always had.
+    ckpt = _session_attr("ckpt", "The CheckpointManager.")
+    remote = _session_attr("remote", "The storage's RemoteCheckpoints, or None.")
+    budget = _session_attr("budget", "The time Budget.")
+    resume = _session_attr("resume")
+    overwrite_storage = _session_attr("overwrite_storage")
+    upload_timeout = _session_attr("upload_timeout")
+    save_every = _session_attr("save_every", "Seconds between periodic saves.")
+    _frozen = _session_attr("frozen_tensors")  # frozen parameter tensors, counted in prepare()
+    _final_upload = _session_attr("final_upload")  # (path, status) of the last waited upload
+    _saves = _session_attr("saves")
+    _last_save = _session_attr("last_save")
+    _stop_reason = _session_attr("stop_reason")
+    _signal_received = _session_attr("signal_received")
 
     # ---------- setup ----------
     def prepare(self, model, optimizer, scheduler=None):
@@ -244,22 +243,9 @@ class Run:
             )
         self.ckpt.fingerprint = run_fingerprint(self.model, optimizer)
         if self.remote is not None:
-            self._check_storage_owner()
+            self._session.check_storage_owner()
         if self.resume:
-            path = self._resume_file()
-            try:
-                saved = self.ckpt.load(
-                    self.model,
-                    optimizer,
-                    scheduler,
-                    self.scaler,
-                    path=path,
-                    map_location="cpu",
-                    fingerprint=self.ckpt.fingerprint,
-                )
-            except DifferentRunError as e:
-                self._different_run(e)
-                saved = self._move_aside_local_checkpoints()
+            saved = self._session.load_latest(self.model, optimizer, scheduler, self.scaler)
             if saved is not None:
                 for k, v in saved.items():
                     setattr(self.state, k, v)
@@ -270,105 +256,6 @@ class Run:
                     f"batch {saved['batch_in_epoch']}, step {saved['step']}"
                 )
         return self.model, self.optimizer
-
-    def _resume_file(self):
-        """The local checkpoint, or the latest one in storage (downloaded) if that is newer,
-        e.g. in a new session or on another platform."""
-        local = self.ckpt.latest()
-        if self.remote is None:
-            return local
-        from .storage import StorageError
-
-        where = self.remote.storage.describe()
-        try:
-            entry = self.remote.latest()
-        except StorageError as e:
-            if local is None:
-                raise StorageError(
-                    f"Could not read the checkpoint list in {where}: {e}. "
-                    "Nothing was changed there. Check the connection and "
-                    "token, or pass resume=False to start fresh."
-                ) from None
-            self._log(f"[efficio] could not read {where} ({e}); resuming from this machine")
-            return local
-        if entry is None or (local is not None and checkpoint_step(local) >= entry["step"]):
-            return local
-        if self._other_run(entry):  # only with overwrite_storage=True; never resumed
-            return local
-        if local is not None:
-            self._log(
-                f"[efficio] {where} has a newer checkpoint (step {entry['step']}) than "
-                f"this machine (step {checkpoint_step(local)})"
-            )
-        path = self.remote.download(entry, self.ckpt.directory)
-        self._log(
-            f"[efficio] downloaded {entry['file']} from {where}: step {entry['step']}, "
-            f"{entry.get('mode', 'exact')} mode, saved on {entry.get('platform', '?')} "
-            f"at {entry.get('time', '?')}; sha256 verified"
-        )
-        return path
-
-    def _other_run(self, entry):
-        """True for a manifest entry saved by a different run (entries from before the
-        fingerprint have none and count as this run's)."""
-        saved = entry.get("fingerprint")
-        return bool(saved) and saved.get("hash") != self.ckpt.fingerprint["hash"]
-
-    def _check_storage_owner(self):
-        """Refuse to write into storage that holds another run's checkpoints, unless
-        overwrite_storage=True. Runs before anything is written there."""
-        from .storage import StorageError
-
-        where = self.remote.storage.describe()
-        try:
-            others = [e for e in self.remote.entries() if self._other_run(e)]
-        except StorageError as e:
-            raise StorageError(
-                f"Could not read the checkpoint list in {where}: {e}. Nothing "
-                "was changed there; check the connection and token."
-            ) from None
-        if not others:
-            return
-        newest = others[-1]
-        if not self.overwrite_storage:
-            raise StorageInUseError(
-                f"{where} (step {newest['step']})", newest["fingerprint"], self.ckpt.fingerprint
-            )
-        self.remote.replace_fingerprints = {e["fingerprint"]["hash"] for e in others}
-        print(
-            f"[efficio] WARNING: overwrite_storage=True: {where} holds {len(others)} "
-            f"checkpoint(s) of a different run (newest at step {newest['step']}). They are "
-            "not resumed, and are deleted once this run's first checkpoint is uploaded."
-        )
-
-    def _different_run(self, error):
-        """A checkpoint from another run: raise with resume=True, else warn and go on."""
-        if self.resume is True:
-            raise error
-        print(
-            f"[efficio] WARNING: not resuming from {error.where}: it was saved by a different "
-            f"run ({error.saved.get('optimizer')}, {error.saved.get('parameters')} parameter "
-            f"tensors; this run: {error.current['optimizer']}, "
-            f"{error.current['parameters']}). Starting fresh. New checkpoints go to the same "
-            "places and replace the old ones there; use another checkpoint_dir or storage "
-            "to keep them, or pass resume=True to make this an error."
-        )
-
-    def _move_aside_local_checkpoints(self):
-        """Starting fresh next to another run's checkpoints: move them into a subfolder, so
-        they are neither resumed nor mixed up with this run's (their steps may be higher).
-        Returns None (nothing resumed)."""
-        files = [
-            f
-            for f in os.listdir(self.ckpt.directory)
-            if f.startswith("ckpt_step") and f.endswith(".pt")
-        ]
-        aside = os.path.join(self.ckpt.directory, time.strftime("other_run_%Y%m%d_%H%M%S"))
-        os.makedirs(aside, exist_ok=True)
-        for f in files:
-            os.replace(os.path.join(self.ckpt.directory, f), os.path.join(aside, f))
-        print(f"[efficio] moved {len(files)} checkpoint file(s) of the other run to {aside}")
-        return None
 
     @contextlib.contextmanager
     def autocast(self):
@@ -404,7 +291,7 @@ class Run:
         prof = self.profiler
         if self._stop_reason == "finished":  # an earlier loop() ended normally; train again
             self._stop_reason = None
-        old_handler = self._install_signal_handler()
+        old_handler = self._session.install_signal_handler()
         try:
             for epoch in range(self.state.epoch, epochs):
                 self.state.epoch = epoch
@@ -465,7 +352,7 @@ class Run:
         finally:
             self._gpu.stop()
             prof.finish()
-            self._restore_signal_handler(old_handler)
+            self._session.restore_signal_handler(old_handler)
 
     def _prepare_loader(self, loader):
         if isinstance(loader, GPULoader):
@@ -513,9 +400,7 @@ class Run:
         if self._micro < self.state.grad_accum_steps:
             return
         self._micro = 0
-        self.ckpt.check()  # raise a failed background save here, not later
-        if self.remote is not None:
-            self.remote.check()  # and a failed upload
+        self._session.check()  # raise a failed background save or upload here, not later
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
@@ -531,9 +416,7 @@ class Run:
         storage set, the file is then uploaded; a blocking save also waits for the upload
         (up to upload_timeout seconds) and says whether it succeeded."""
         extra = {"shuffle_seed": self._shuffle_seed} if self._shuffle_seed is not None else None
-        if self.remote is not None:
-            self.remote.wait()  # one upload at a time; its file must stay until done
-        path = self.ckpt.save(
+        return self._session.save(
             self.state,
             self.model,
             self.optimizer,
@@ -542,83 +425,18 @@ class Run:
             extra=extra,
             blocking=blocking,
         )
-        self._last_save = time.time()
-        self._saves += 1
-        if self.ckpt.pending:
-            self._log(f"[efficio] checkpoint saving in the background: {path}")
-        else:
-            self._log(f"[efficio] checkpoint saved: {path}")
-        if self.remote is not None:
-            self._upload(path, blocking)
-        return path
-
-    def _upload(self, path, blocking):
-        info = {
-            "step": self.state.step,
-            "epoch": self.state.epoch,
-            "batch_in_epoch": self.state.batch_in_epoch,
-            "mode": self.ckpt.mode,
-            "trainable_only": bool(self.ckpt.trainable_only and self._frozen),
-            "fingerprint": self.ckpt.fingerprint,
-            "efficio_version": _efficio_version(),
-        }
-        if not blocking:
-            self.remote.upload(path, info, after=self.ckpt.writer)  # raises an earlier failure
-            return
-        status, message = self.remote.finish()  # an earlier upload: report, don't raise
-        if status == "failed":
-            print(f"[efficio] an earlier upload failed: {message}")
-        self.remote.upload(path, info)
-        status, message = self.remote.finish(self.upload_timeout)
-        self._final_upload = (path, status)
-        if status == "ok":
-            self._log(f"[efficio] upload complete: {message}")
-        elif status == "failed":
-            print(
-                f"[efficio] UPLOAD FAILED: {message}\n[efficio] the checkpoint is only on "
-                f"this machine: {path}"
-            )
-        else:
-            print(f"[efficio] upload NOT confirmed: {message}")
 
     def _maybe_save_or_stop(self):
-        if self._signal_received:
-            self._stop_reason = "shutdown signal"
-        elif self.budget.nearly_out():
-            self._stop_reason = "time budget nearly used"
-        if self._stop_reason:
-            self._log(f"[efficio] stopping: {self._stop_reason}")
+        action = self._session.poll()
+        if action == "stop":
             self.save()  # waits for any background save, then writes
-        elif time.time() - self._last_save >= self.save_every:
+        elif action == "save":
             self.save(blocking=False)
-
-    def _install_signal_handler(self):
-        """Catch SIGTERM while training. Returns the previous handler, or None if ours
-        could not be installed."""
-
-        def handler(signum, frame):
-            self._signal_received = True  # save happens at the next optimizer step
-
-        try:
-            return signal.signal(signal.SIGTERM, handler)
-        except (ValueError, OSError):  # not in the main thread, or unsupported
-            return None
-
-    @staticmethod
-    def _restore_signal_handler(old):
-        # Put the previous handler back so that, after training, SIGTERM stops the process
-        # (or notebook kernel) as usual instead of only setting a flag nobody reads.
-        if old is None:
-            return
-        try:
-            signal.signal(signal.SIGTERM, old)
-        except (ValueError, OSError, TypeError):
-            pass
 
     @property
     def should_stop(self):
         """True when the run stopped early (time budget or shutdown signal)."""
-        return self._stop_reason is not None and self._stop_reason != "finished"
+        return self._session.should_stop
 
     # ---------- reporting ----------
     def report(self):
@@ -633,7 +451,7 @@ class Run:
             f"  checkpoints     : {self._saves} saved to {self.ckpt.directory}",
             f"  ended because   : {self._stop_reason or 'loop not finished'}",
         ]
-        lines += self._checkpoint_report()
+        lines += self._session.report_lines()
         prof = self.profiler
         util = self._gpu.average
         lines += [
@@ -682,76 +500,7 @@ class Run:
     def _maybe_shut_down(self):
         """shutdown_when_done: release the Colab runtime, only once training ended and the
         final checkpoint is confirmed in storage."""
-        if not self.shutdown_when_done:
-            return
-        if self.hw.platform != "colab":
-            self._log(shutdown.startup_notice(self.hw.platform, self.remote is not None))
-            return
-        if self._stop_reason is None:
-            print("[efficio] not shutting down: run.loop() has not ended")
-            return
-        path, status = self._final_upload or (None, None)
-        if self.remote is None or status != "ok" or path != self.ckpt.stats["last_path"]:
-            print(
-                "[efficio] NOT shutting down: the final checkpoint is not confirmed in "
-                "storage, and it would be lost with the runtime"
-            )
-            return
-        shutdown.release_colab_runtime(self._log)
-
-    def _checkpoint_report(self):
-        try:
-            self.ckpt.wait()  # finish a background save before reporting
-            failed = ""
-        except RuntimeError as e:
-            failed = f" (last background save FAILED: {e.__cause__ or e})"
-        st = self.ckpt.stats
-        kind = self.ckpt.mode + (", trainable parameters only" if self.ckpt.trainable_only else "")
-        size = f", last file {_size(st['last_bytes'])}" if st["last_bytes"] is not None else ""
-        lines = [f"  checkpoint mode : {kind}{size}{failed}"]
-        if st["saves"]:
-            hidden = max(st["background_s"] - st["waited_s"], 0.0)
-            line = f"  save time       : {st['blocking_s']:.1f} s blocking training"
-            if st["background_s"]:
-                line += (
-                    f", {st['background_s']:.1f} s written in the background "
-                    f"({hidden:.1f} s hidden)"
-                )
-            lines.append(line)
-        return lines + self._storage_report()
-
-    def _storage_report(self):
-        if self.remote is None:
-            return []
-        status, message = self.remote.finish(self.upload_timeout)  # a periodic upload
-        st = self.remote.stats
-        lines = [
-            f"  storage         : {self.remote.storage.describe()} "
-            f"(keeps the last {self.remote.keep})"
-        ]
-        if st["downloaded"]:
-            d = st["downloaded"]
-            lines.append(
-                f"  downloaded      : {d['file']} (step {d['step']}, saved on "
-                f"{d.get('platform', '?')}), sha256 verified"
-            )
-        if status == "failed" or st["last_ok"] is False:
-            why = message if status == "failed" else st["last_error"]
-            lines.append(f"  last upload     : FAILED ({why})")
-        elif status == "running":
-            lines.append(f"  last upload     : still running ({message})")
-        if st["last_file"]:
-            lines.append(
-                f"  last uploaded   : {st['last_file']}, {_size(st['last_bytes'])} at "
-                f"{st['last_time']}"
-            )
-        if st["uploads"]:
-            hidden = max(st["upload_s"] - st["waited_s"], 0.0)
-            lines.append(
-                f"  upload time     : {st['upload_s']:.1f} s in the background "
-                f"({hidden:.1f} s hidden)"
-            )
-        return lines
+        self._session.maybe_shut_down(self.hw.platform, self.shutdown_when_done)
 
     def _log(self, msg):
         if self.verbose:
