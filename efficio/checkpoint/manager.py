@@ -230,29 +230,24 @@ class CheckpointManager:
         is copied to CPU now and the file is written in the background."""
         start = time.perf_counter()
         self.wait()  # one save at a time; raises old errors
-        background = self.async_save and not blocking
-        payload = self._payload(
-            train_state,
-            model,
-            optimizer,
-            scheduler,
-            scaler,
-            extra,
-            copy_state=background or self.mode != "exact",
-        )
-        final = self._path(train_state.step)
-        if background:
-            self._thread = threading.Thread(
-                target=self._write_in_background, args=(payload, final), name="efficio-checkpoint"
-            )
-            self._thread.start()
-        else:
-            self._write(payload, final)
-        self.stats["saves"] += 1
-        self.stats["blocking_s"] += time.perf_counter() - start
-        return final
+        payload = self._build_payload(train_state, model, optimizer, scheduler, scaler, extra)
+        return self._save_payload(train_state.step, payload, blocking, start)
 
-    def _payload(self, train_state, model, optimizer, scheduler, scaler, extra, copy_state):
+    def save_payload(self, step, payload, blocking=True):
+        """Save a payload that is already built and return the file's path. The payload has
+        the layout read() returns: "train_state" (a dict), "model", "optimizer", "scheduler",
+        "scaler", "rng", "extra" and "meta", with full-precision state dicts. It is encoded
+        in this manager's mode and written as save() writes it: atomically, keeping the
+        newest keep_last files, and in the background with blocking=False and async_save.
+        meta may hold "trainable_only", "frozen" and "fingerprint"; this manager's own
+        fingerprint, when set, takes precedence over the one in meta."""
+        start = time.perf_counter()
+        self.wait()  # one save at a time; raises old errors
+        return self._save_payload(step, payload, blocking, start)
+
+    def _build_payload(self, train_state, model, optimizer, scheduler, scaler, extra):
+        """The full-precision payload of the live objects, before any mode encoding. The
+        state dicts hold the live tensors; _save_payload copies them when it has to."""
         frozen = (
             {n for n, p in model.named_parameters() if not p.requires_grad}
             if self.trainable_only
@@ -261,9 +256,44 @@ class CheckpointManager:
         model_sd = {k: v for k, v in model.state_dict().items() if k not in frozen}
         full_sd = model.state_dict() if frozen else None
         frozen_sig = {k: tensor_signature(full_sd[k]) for k in sorted(frozen) if k in full_sd}
-        opt_sd = optimizer.state_dict()
-        sched_sd = scheduler.state_dict() if scheduler is not None else None
-        scaler_sd = scaler.state_dict() if scaler is not None else None
+        return {
+            "train_state": train_state.to_dict(),
+            "model": model_sd,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
+            "scaler": scaler.state_dict() if scaler is not None else None,
+            "rng": _rng_state(),
+            "extra": dict(extra or {}),
+            "meta": {
+                "trainable_only": bool(frozen),
+                "frozen": frozen_sig,
+                "fingerprint": self.fingerprint,
+            },
+        }
+
+    def _save_payload(self, step, payload, blocking, start):
+        background = self.async_save and not blocking
+        encoded = self._encode(payload, copy_state=background or self.mode != "exact")
+        final = self._path(step)
+        if background:
+            self._thread = threading.Thread(
+                target=self._write_in_background, args=(encoded, final), name="efficio-checkpoint"
+            )
+            self._thread.start()
+        else:
+            self._write(encoded, final)
+        self.stats["saves"] += 1
+        self.stats["blocking_s"] += time.perf_counter() - start
+        return final
+
+    def _encode(self, payload, copy_state):
+        """The file contents for a full-precision payload, in this manager's mode."""
+        given = payload.get("meta") or {}
+        model_sd = payload["model"]
+        opt_sd = payload["optimizer"]
+        sched_sd = payload.get("scheduler")
+        scaler_sd = payload.get("scaler")
+        frozen_sig = given.get("frozen") or {}
         if copy_state:  # a snapshot that training can't change
             model_sd, opt_sd, sched_sd, scaler_sd = (
                 _to_cpu(model_sd),
@@ -280,10 +310,12 @@ class CheckpointManager:
             "format_version": FORMAT_VERSION,
             "efficio_version": _efficio_version(),
             "mode": self.mode,
-            "trainable_only": bool(frozen),
+            "trainable_only": bool(given.get("trainable_only")),
             "frozen": frozen_sig,
             "model_dtypes": dtypes,
-            "fingerprint": self.fingerprint,
+            "fingerprint": (
+                self.fingerprint if self.fingerprint is not None else given.get("fingerprint")
+            ),
             "sizes": {
                 "model_bytes": _tensor_bytes(model_sd),
                 "optimizer_bytes": _tensor_bytes(opt_sd),
@@ -294,13 +326,13 @@ class CheckpointManager:
             "efficio_version": meta["efficio_version"],
             "format_version": FORMAT_VERSION,
             "mode": self.mode,
-            "train_state": train_state.to_dict(),
+            "train_state": dict(payload["train_state"]),
             "model": model_sd,
             "optimizer": opt_sd,
             "scheduler": sched_sd,
             "scaler": scaler_sd,
-            "rng": _rng_state(),
-            "extra": dict(extra or {}),
+            "rng": payload["rng"],
+            "extra": dict(payload.get("extra") or {}),
             "meta": meta,
         }
 
@@ -357,21 +389,17 @@ class CheckpointManager:
         files = sorted(glob.glob(os.path.join(self.directory, "ckpt_step*.pt")))
         return files[-1] if files else None
 
-    def load(
-        self,
-        model,
-        optimizer,
-        scheduler=None,
-        scaler=None,
-        path=None,
-        map_location="cpu",
-        fingerprint=None,
-    ):
-        """Restore everything. Returns the saved train_state dict, or None if nothing to
-        resume. Reads checkpoints in any mode (whatever this manager's own mode is), those
-        written by Efficio 0.1.x, and early 0.2.0 "light" checkpoints (as "smallest").
-        fingerprint: raise DifferentRunError, before changing anything, if the checkpoint has
-        a different run fingerprint (checkpoints without one are accepted)."""
+    def read(self, path=None, map_location="cpu", fingerprint=None):
+        """Read a checkpoint without changing the model, optimizer, RNG or this manager.
+        Returns its payload with the model and optimizer state decoded to full precision, or
+        None if there is nothing to read. Reads any mode (whatever this manager's own mode
+        is), files written by Efficio 0.1.x, and early 0.2.0 "light" files (as "smallest").
+        path: the newest checkpoint in the folder by default. fingerprint: raise
+        DifferentRunError if the checkpoint has a different run fingerprint (checkpoints
+        without one are accepted).
+        Keys: "train_state" (dict), "model", "optimizer", "scheduler", "scaler", "rng",
+        "extra", "meta" and "path". In a trainable-only checkpoint, "model" lacks the frozen
+        parameters; complete_model_state() adds them from a live model."""
         self.wait()
         path = path or self.latest()
         if path is None:
@@ -394,22 +422,86 @@ class CheckpointManager:
             model_sd = light.decode_model(model_sd, meta["model_dtypes"])
         if mode in ("light", "smallest"):
             opt_sd = light.decode_optimizer(opt_sd)
+        payload["model"], payload["optimizer"] = model_sd, opt_sd
+        payload["meta"], payload["path"] = meta, path
+        return payload
+
+    def restore(self, payload, model, optimizer, scheduler=None, scaler=None):
+        """Load a read() payload into the objects and restore the RNG states. Returns the
+        saved train_state dict. A trainable-only checkpoint is refused before the model is
+        changed if the model's frozen weights differ from the ones it was saved with."""
+        meta = payload.get("meta") or {}
+        path = payload.get("path", "the checkpoint")
         if meta.get("trainable_only"):
-            self._load_trainable_only(model, model_sd, meta.get("frozen", {}), path)
+            self._load_trainable_only(model, payload["model"], meta.get("frozen", {}), path)
         else:
-            model.load_state_dict(model_sd)
-        optimizer.load_state_dict(opt_sd)
-        if scheduler is not None and payload["scheduler"] is not None:
+            model.load_state_dict(payload["model"])
+        optimizer.load_state_dict(payload["optimizer"])
+        if scheduler is not None and payload.get("scheduler") is not None:
             scheduler.load_state_dict(payload["scheduler"])
-        if scaler is not None and payload["scaler"] is not None:
+        if scaler is not None and payload.get("scaler") is not None:
             scaler.load_state_dict(payload["scaler"])
         _set_rng_state(payload["rng"])
         self.extra = payload.get("extra") or {}  # older checkpoints have none
         self.meta = meta
         return payload["train_state"]
 
+    def load(
+        self,
+        model,
+        optimizer,
+        scheduler=None,
+        scaler=None,
+        path=None,
+        map_location="cpu",
+        fingerprint=None,
+    ):
+        """Restore everything: restore(read(...)). Returns the saved train_state dict, or
+        None if nothing to resume. Reads checkpoints in any mode (whatever this manager's own
+        mode is), those written by Efficio 0.1.x, and early 0.2.0 "light" checkpoints (as
+        "smallest"). fingerprint: raise DifferentRunError, before changing anything, if the
+        checkpoint has a different run fingerprint (checkpoints without one are accepted)."""
+        payload = self.read(path, map_location=map_location, fingerprint=fingerprint)
+        if payload is None:
+            return None
+        return self.restore(payload, model, optimizer, scheduler, scaler)
+
+    @staticmethod
+    def complete_model_state(payload, model):
+        """The full model state dict of a read() payload. For a trainable-only checkpoint
+        the frozen tensors are taken from `model`, after checking that they are the ones the
+        checkpoint was saved with (CheckpointMismatchError otherwise), so a loader that needs
+        every key gets them. Other checkpoints: payload["model"] unchanged."""
+        meta = payload.get("meta") or {}
+        saved = payload["model"]
+        if not meta.get("trainable_only"):
+            return saved
+        frozen = meta.get("frozen", {})
+        CheckpointManager._check_frozen(model, frozen, payload.get("path", "the checkpoint"))
+        full = {}
+        for name, value in model.state_dict().items():
+            if name in saved:
+                full[name] = saved[name]
+            elif name in frozen:
+                full[name] = value
+        full.update({k: v for k, v in saved.items() if k not in full})  # left for the loader
+        return full
+
     @staticmethod
     def _load_trainable_only(model, model_sd, frozen, path):
+        CheckpointManager._check_frozen(model, frozen, path)
+        missing, unexpected = model.load_state_dict(model_sd, strict=False)
+        not_frozen = [k for k in missing if k not in frozen]
+        if not_frozen or unexpected:
+            raise CheckpointMismatchError(
+                f"{path} doesn't fit this model: missing {not_frozen[:5]}, "
+                f"unexpected {list(unexpected)[:5]}."
+            )
+
+    @staticmethod
+    def _check_frozen(model, frozen, path):
+        """Raise CheckpointMismatchError if the model's frozen parameters differ from the
+        signatures a trainable-only checkpoint was saved with."""
         current = model.state_dict()
         problems = []
         for name, saved in frozen.items():
@@ -426,13 +518,6 @@ class CheckpointManager:
                 f"of this model don't match the ones it was trained with ({shown}). Load the "
                 "same pretrained weights and freeze the same layers before run.prepare(), or "
                 "start a new run with a different checkpoint_dir."
-            )
-        missing, unexpected = model.load_state_dict(model_sd, strict=False)
-        not_frozen = [k for k in missing if k not in frozen]
-        if not_frozen or unexpected:
-            raise CheckpointMismatchError(
-                f"{path} doesn't fit this model: missing {not_frozen[:5]}, "
-                f"unexpected {list(unexpected)[:5]}."
             )
 
     def _cleanup(self):

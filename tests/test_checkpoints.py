@@ -445,3 +445,140 @@ def test_invalid_mode_is_refused(tmp_path, cpu_only):
     with pytest.raises(ValueError, match="exact"):
         efficio.Run(checkpoint_dir=str(tmp_path), checkpoint_mode="light-ish", verbose=False)
     random.random()
+
+
+# ---------- read / restore / save_payload as separate steps ----------
+
+
+@pytest.mark.parametrize("mode", ["exact", "light", "smallest"])
+def test_read_decodes_every_mode_and_changes_nothing(tmp_path, mode):
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path), mode=mode)
+    path = mgr.save(TrainState(epoch=2, step=6), model, opt, extra={"shuffle_seed": 4})
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    rng_before = torch.get_rng_state()
+    payload = mgr.read()
+    assert payload["path"] == path and payload["train_state"]["step"] == 6
+    assert payload["extra"] == {"shuffle_seed": 4} and payload["meta"]["mode"] == mode
+    assert mgr.extra == {} and mgr.meta == {}  # only restore() sets them
+    assert torch.equal(torch.get_rng_state(), rng_before)
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, before[k])
+    tol = 1e-3 if mode == "smallest" else 0.0  # weights: exact, or rounded to fp16
+    for k, v in model.state_dict().items():
+        assert payload["model"][k].dtype == v.dtype  # decoded back to full precision
+        assert (payload["model"][k] - v).abs().max() <= tol
+    sd = opt.state_dict()
+    if mode != "exact":  # 8-bit optimizer state: exactly what the light decoder gives
+        sd = decode_optimizer(encode_optimizer(sd))
+    for pid, st in sd["state"].items():
+        for k in ("exp_avg", "exp_avg_sq"):
+            assert payload["optimizer"]["state"][pid][k].dtype == st[k].dtype
+            assert torch.equal(payload["optimizer"]["state"][pid][k], st[k])
+
+
+def test_read_returns_none_without_checkpoints(tmp_path):
+    assert CheckpointManager(str(tmp_path)).read() is None
+
+
+def test_read_refuses_another_runs_checkpoint(tmp_path):
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path))
+    mgr.fingerprint = cm.run_fingerprint(model, opt)
+    mgr.save(TrainState(step=1), model, opt)
+    other = nn.Linear(3, 3)
+    other_fp = cm.run_fingerprint(other, torch.optim.SGD(other.parameters(), lr=0.1))
+    with pytest.raises(cm.DifferentRunError):
+        mgr.read(fingerprint=other_fp)
+    assert mgr.read(fingerprint=mgr.fingerprint)["train_state"]["step"] == 1
+
+
+def test_restore_loads_a_read_payload_and_the_rng(tmp_path):
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path))
+    mgr.save(TrainState(step=3), model, opt, extra={"shuffle_seed": 9})
+    expected = torch.rand(4)  # what the RNG gives right after the save
+    payload = mgr.read()
+    torch.rand(100)  # move the RNG on
+    fresh, fresh_opt = _adam_model(steps=0)
+    assert mgr.restore(payload, fresh, fresh_opt)["step"] == 3
+    assert torch.equal(torch.rand(4), expected)
+    assert mgr.extra == {"shuffle_seed": 9} and mgr.meta["mode"] == "exact"
+    for a, b in zip(model.parameters(), fresh.parameters()):
+        assert torch.equal(a, b)
+    for k in ("exp_avg", "exp_avg_sq"):
+        assert torch.equal(opt.state_dict()["state"][0][k], fresh_opt.state_dict()["state"][0][k])
+
+
+def test_restore_refuses_other_frozen_weights_before_changing_the_model(tmp_path):
+    model, opt = _frozen_backbone()
+    _step(model, opt)
+    mgr = CheckpointManager(str(tmp_path), trainable_only=True)
+    mgr.save(TrainState(step=3), model, opt)
+    payload = mgr.read()
+    other, other_opt = _frozen_backbone(seed=99)
+    head_before = other[2].weight.clone()
+    with pytest.raises(CheckpointMismatchError, match="frozen parameters"):
+        mgr.restore(payload, other, other_opt)
+    assert torch.equal(other[2].weight, head_before)
+
+
+@pytest.mark.parametrize("target", ["exact", "light", "smallest"])
+def test_save_payload_rewrites_a_read_payload_in_any_mode(tmp_path, target):
+    model, opt = _adam_model()
+    source = CheckpointManager(str(tmp_path / "src"))
+    source.fingerprint = cm.run_fingerprint(model, opt)
+    source.save(TrainState(step=5), model, opt)
+    payload = source.read()
+    mgr = CheckpointManager(str(tmp_path / target), mode=target)  # no fingerprint of its own
+    path = mgr.save_payload(5, payload)
+    assert os.path.basename(path) == "ckpt_step000000005.pt"
+    meta = torch.load(path, weights_only=False)["meta"]
+    assert meta["mode"] == target and meta["fingerprint"] == source.fingerprint
+    assert "path" not in torch.load(path, weights_only=False)
+    fresh, fresh_opt = _adam_model(steps=0)
+    assert mgr.load(fresh, fresh_opt, fingerprint=source.fingerprint)["step"] == 5
+    tol = 1e-3 if target == "smallest" else 0.0
+    for a, b in zip(model.parameters(), fresh.parameters()):
+        assert (a - b).abs().max() <= tol
+
+
+def test_save_payload_in_background_snapshots_the_payload(tmp_path):
+    model, opt = _adam_model()
+    CheckpointManager(str(tmp_path / "src")).save(TrainState(step=2), model, opt)
+    payload = CheckpointManager(str(tmp_path / "src")).read()
+    expected = {k: v.clone() for k, v in payload["model"].items()}
+    mgr = CheckpointManager(str(tmp_path / "bg"), async_save=True)
+    mgr.save_payload(2, payload, blocking=False)
+    for v in payload["model"].values():  # changed while the file may still be written
+        v.add_(1.0)
+    mgr.wait()
+    written = mgr.read()["model"]
+    for k, v in expected.items():
+        assert torch.equal(written[k], v)
+
+
+def test_complete_model_state_fills_checked_frozen_weights(tmp_path):
+    model, opt = _frozen_backbone()
+    _step(model, opt)
+    mgr = CheckpointManager(str(tmp_path), trainable_only=True)
+    mgr.save(TrainState(step=3), model, opt)
+    payload = mgr.read()
+    assert set(payload["model"]) == {"2.weight", "2.bias"}
+    fresh, _ = _frozen_backbone()
+    full = CheckpointManager.complete_model_state(payload, fresh)
+    assert list(full) == list(model.state_dict())
+    fresh.load_state_dict(full)  # strict: every key is there
+    for a, b in zip(model.parameters(), fresh.parameters()):
+        assert torch.equal(a, b)
+    other, _ = _frozen_backbone(seed=99)
+    with pytest.raises(CheckpointMismatchError, match="frozen parameters"):
+        CheckpointManager.complete_model_state(payload, other)
+
+
+def test_complete_model_state_of_a_full_checkpoint_is_the_saved_state(tmp_path):
+    model, opt = _adam_model()
+    mgr = CheckpointManager(str(tmp_path))
+    mgr.save(TrainState(step=1), model, opt)
+    payload = mgr.read()
+    assert CheckpointManager.complete_model_state(payload, model) is payload["model"]
